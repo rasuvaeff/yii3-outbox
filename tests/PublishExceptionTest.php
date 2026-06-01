@@ -39,4 +39,17 @@ final class PublishExceptionTest extends TestCase
 
         $this->assertSame($previous, $exception->getPrevious());
     }
+
+    #[Test]
+    public function preservesErrorCode(): void
+    {
+        $message = OutboxMessage::create(type: 'test', payload: '{}');
+        $exception = new PublishException(
+            message: 'Failed',
+            outboxMessage: $message,
+            code: 42,
+        );
+
+        $this->assertSame(42, $exception->getCode());
+    }
 }
