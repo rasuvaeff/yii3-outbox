@@ -1,0 +1,68 @@
+{
+    "name": "rasuvaeff/yii3-outbox",
+    "description": "Transactional outbox pattern for Yii3",
+    "license": "BSD-3-Clause",
+    "type": "library",
+    "authors": [
+        {
+            "name": "Victor Razuvaev",
+            "email": "rasuvaeff@gmail.com"
+        }
+    ],
+    "homepage": "https://github.com/rasuvaeff/yii3-outbox",
+    "support": {
+        "issues": "https://github.com/rasuvaeff/yii3-outbox/issues",
+        "source": "https://github.com/rasuvaeff/yii3-outbox"
+    },
+    "require": {
+        "php": "^8.3",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "ergebnis/composer-normalize": "^2.51",
+        "friendsofphp/php-cs-fixer": "^3.95",
+        "infection/infection": "^0.29",
+        "maglnet/composer-require-checker": "^4.17",
+        "phpunit/phpunit": "^11.5",
+        "psalm/plugin-phpunit": "^0.19",
+        "rector/rector": "^2.4",
+        "vimeo/psalm": "^6.16"
+    },
+    "autoload": {
+        "psr-4": {
+            "Rasuvaeff\\Yii3Outbox\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Rasuvaeff\\Yii3Outbox\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "ergebnis/composer-normalize": true,
+            "infection/extension-installer": true
+        },
+        "sort-packages": true
+    },
+    "scripts": {
+        "build": [
+            "@composer validate --strict",
+            "@composer normalize --dry-run",
+            "@require-checker",
+            "@cs",
+            "@psalm",
+            "@test"
+        ],
+        "cs": "php-cs-fixer fix --dry-run --diff --config=.php-cs-fixer.php",
+        "cs:fix": "php-cs-fixer fix --diff --config=.php-cs-fixer.php",
+        "mutation": "infection --threads=max",
+        "psalm": "psalm --no-cache",
+        "rector": "rector process --dry-run",
+        "rector:fix": "rector process",
+        "require-checker": "composer-require-checker check composer.json",
+        "test": "phpunit",
+        "test:coverage": "phpunit --coverage-text --coverage-clover=build/coverage.xml",
+        "test:coverage:ci": "phpunit --coverage-clover=build/coverage.xml"
+    }
+}

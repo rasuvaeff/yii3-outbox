@@ -1,0 +1,126 @@
+# yii3-outbox
+
+Install:
+
+```bash
+composer require rasuvaeff/yii3-outbox
+```
+
+## Rules
+
+- Core has no DB dependency. Implement `StorageInterface` for persistence.
+- DB storage lives in `rasuvaeff/yii3-outbox-db`.
+- `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt()`.
+- `Processor::process()` increments attempts before calling publisher.
+
+## API
+
+### OutboxMessage
+
+```php
+use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use Rasuvaeff\Yii3Outbox\OutboxStatus;
+
+$message = OutboxMessage::create(
+    type: 'order.created',
+    payload: '{"orderId": 42}',
+);
+
+$message->getId();          // string, 32-char hex
+$message->getType();        // string
+$message->getPayload();     // string
+$message->getStatus();      // OutboxStatus::Pending
+$message->getCreatedAt();   // DateTimeImmutable
+$message->getAttempts();    // int
+$message->getLastAttemptAt(); // ?DateTimeImmutable
+
+$updated = $message->withStatus(OutboxStatus::Published);
+$attempted = $message->withAttempt();
+```
+
+### OutboxStatus
+
+```php
+enum OutboxStatus: string
+{
+    case Pending = 'pending';
+    case Published = 'published';
+    case Failed = 'failed';
+}
+```
+
+### StorageInterface
+
+```php
+interface StorageInterface
+{
+    public function save(OutboxMessage $message): void;
+    public function findPending(int $limit = 100): array;
+    public function markPublished(OutboxMessage $message): void;
+    public function markFailed(OutboxMessage $message): void;
+    public function getById(string $id): ?OutboxMessage;
+}
+```
+
+### PublisherInterface
+
+```php
+interface PublisherInterface
+{
+    public function publish(OutboxMessage $message): void;
+}
+```
+
+Throw `PublishException` on failure:
+
+```php
+throw new PublishException(message: 'Failed', outboxMessage: $message, previous: $e);
+```
+
+### RetryPolicy
+
+```php
+use Rasuvaeff\Yii3Outbox\RetryPolicy;
+
+$policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
+$policy->shouldRetry($message);      // bool
+$policy->isReadyForRetry($message);  // bool
+```
+
+### Processor
+
+```php
+use Rasuvaeff\Yii3Outbox\Processor;
+
+$processor = new Processor(
+    storage: $storage,
+    publisher: $publisher,
+    retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 60),
+    batchSize: 100,
+);
+
+$processed = $processor->process(); // int
+```
+
+### Serializer
+
+```php
+use Rasuvaeff\Yii3Outbox\Serializer;
+
+$serializer = new Serializer();
+$json = $serializer->serialize($message);
+$restored = $serializer->deserialize($json);
+```
+
+### InMemoryStorage
+
+```php
+use Rasuvaeff\Yii3Outbox\InMemoryStorage;
+
+$storage = new InMemoryStorage();
+$storage->save($message);
+$storage->findPending(limit: 10);
+$storage->getById($id);
+$storage->count();
+$storage->clear();
+```
