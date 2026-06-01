@@ -27,9 +27,10 @@ final class SerializerTest extends TestCase
             type: 'order.created',
             payload: '{"orderId": 1}',
             status: OutboxStatus::Pending,
-            createdAt: new DateTimeImmutable('2026-01-15 12:30:00'),
+            createdAt: new DateTimeImmutable('2026-01-15 12:30:00+00:00'),
             attempts: 2,
-            lastAttemptAt: new DateTimeImmutable('2026-01-15 12:31:00'),
+            lastAttemptAt: new DateTimeImmutable('2026-01-15 12:31:00+00:00'),
+            aggregateId: 'order-1',
         );
     }
 
@@ -44,8 +45,15 @@ final class SerializerTest extends TestCase
         $this->assertSame($this->message->getPayload(), $restored->getPayload());
         $this->assertSame($this->message->getStatus(), $restored->getStatus());
         $this->assertSame($this->message->getAttempts(), $restored->getAttempts());
-        $this->assertEquals($this->message->getCreatedAt(), $restored->getCreatedAt());
-        $this->assertEquals($this->message->getLastAttemptAt(), $restored->getLastAttemptAt());
+        $this->assertSame($this->message->getAggregateId(), $restored->getAggregateId());
+        $this->assertSame(
+            $this->message->getCreatedAt()->format(DATE_ATOM),
+            $restored->getCreatedAt()->format(DATE_ATOM),
+        );
+        $this->assertSame(
+            $this->message->getLastAttemptAt()?->format(DATE_ATOM),
+            $restored->getLastAttemptAt()?->format(DATE_ATOM),
+        );
     }
 
     #[Test]
@@ -66,6 +74,23 @@ final class SerializerTest extends TestCase
     }
 
     #[Test]
+    public function serializesWithNullAggregateId(): void
+    {
+        $message = new OutboxMessage(
+            id: 'abc123',
+            type: 'test',
+            payload: '{}',
+            status: OutboxStatus::Pending,
+            createdAt: new DateTimeImmutable('2026-01-15 12:30:00'),
+        );
+
+        $json = $this->fixture->serialize($message);
+        $restored = $this->fixture->deserialize($json);
+
+        $this->assertNull($restored->getAggregateId());
+    }
+
+    #[Test]
     public function producesValidJson(): void
     {
         $json = $this->fixture->serialize($this->message);
@@ -75,6 +100,7 @@ final class SerializerTest extends TestCase
         $this->assertSame('abc123', $decoded['id']);
         $this->assertSame('order.created', $decoded['type']);
         $this->assertSame('pending', $decoded['status']);
+        $this->assertSame('order-1', $decoded['aggregateId']);
     }
 
     #[Test]
@@ -101,5 +127,59 @@ final class SerializerTest extends TestCase
         $this->expectExceptionMessage('Deserialized data must be an array');
 
         $this->fixture->deserialize('"string"');
+    }
+
+    #[Test]
+    public function throwsOnNonStringId(): void
+    {
+        $json = '{"id":123,"type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "id" must be a string');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function throwsOnNonStringStatus(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":123,"createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "status" must be a string');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function throwsOnNonIntAttempts(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":"zero"}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "attempts" must be an integer');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function throwsOnNonStringAggregateId(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0,"aggregateId":123}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "aggregateId" must be a string or null');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function deserializesLegacyMessageWithoutAggregateId(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
+
+        $restored = $this->fixture->deserialize($json);
+
+        $this->assertNull($restored->getAggregateId());
     }
 }

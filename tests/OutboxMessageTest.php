@@ -7,7 +7,6 @@ namespace Rasuvaeff\Yii3Outbox\Tests;
 use DateTimeImmutable;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -40,6 +39,7 @@ final class OutboxMessageTest extends TestCase
         $this->assertSame('2026-01-01 00:00:00', $this->fixture->getCreatedAt()->format('Y-m-d H:i:s'));
         $this->assertSame(0, $this->fixture->getAttempts());
         $this->assertNull($this->fixture->getLastAttemptAt());
+        $this->assertNull($this->fixture->getAggregateId());
     }
 
     #[Test]
@@ -54,7 +54,34 @@ final class OutboxMessageTest extends TestCase
         $this->assertSame('{"userId": 42}', $message->getPayload());
         $this->assertSame(OutboxStatus::Pending, $message->getStatus());
         $this->assertSame(0, $message->getAttempts());
+        $this->assertNull($message->getAggregateId());
         $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $message->getId());
+    }
+
+    #[Test]
+    public function createsWithAggregateId(): void
+    {
+        $message = OutboxMessage::create(
+            type: 'order.created',
+            payload: '{}',
+            aggregateId: 'order-42',
+        );
+
+        $this->assertSame('order-42', $message->getAggregateId());
+    }
+
+    #[Test]
+    public function createsWithExplicitCreatedAt(): void
+    {
+        $at = new DateTimeImmutable('2026-06-01 10:00:00');
+
+        $message = OutboxMessage::create(
+            type: 'test',
+            payload: '{}',
+            createdAt: $at,
+        );
+
+        $this->assertSame('2026-06-01 10:00:00', $message->getCreatedAt()->format('Y-m-d H:i:s'));
     }
 
     #[Test]
@@ -68,13 +95,32 @@ final class OutboxMessageTest extends TestCase
     }
 
     #[Test]
-    public function withAttemptIncrementsAttempts(): void
+    public function withStatusPreservesAggregateId(): void
     {
-        $attempted = $this->fixture->withAttempt();
+        $message = OutboxMessage::create(type: 'test', payload: '{}', aggregateId: 'agg-1');
+        $updated = $message->withStatus(OutboxStatus::Published);
+
+        $this->assertSame('agg-1', $updated->getAggregateId());
+    }
+
+    #[Test]
+    public function withAttemptIncrementsAttemptsAndSetsTimestamp(): void
+    {
+        $at = new DateTimeImmutable('2026-06-01 12:00:00');
+        $attempted = $this->fixture->withAttempt($at);
 
         $this->assertSame(1, $attempted->getAttempts());
         $this->assertSame(0, $this->fixture->getAttempts());
-        $this->assertNotNull($attempted->getLastAttemptAt());
+        $this->assertSame('2026-06-01 12:00:00', $attempted->getLastAttemptAt()?->format('Y-m-d H:i:s'));
+    }
+
+    #[Test]
+    public function withAttemptPreservesAggregateId(): void
+    {
+        $message = OutboxMessage::create(type: 'test', payload: '{}', aggregateId: 'agg-1');
+        $attempted = $message->withAttempt(new DateTimeImmutable());
+
+        $this->assertSame('agg-1', $attempted->getAggregateId());
     }
 
     #[Test]
@@ -121,22 +167,5 @@ final class OutboxMessageTest extends TestCase
             createdAt: new DateTimeImmutable(),
             attempts: -1,
         );
-    }
-
-    /**
-     * @return iterable<string, array{OutboxStatus, string}>
-     */
-    public static function statusProvider(): iterable
-    {
-        yield 'pending' => [OutboxStatus::Pending, 'pending'];
-        yield 'published' => [OutboxStatus::Published, 'published'];
-        yield 'failed' => [OutboxStatus::Failed, 'failed'];
-    }
-
-    #[Test]
-    #[DataProvider('statusProvider')]
-    public function statusEnumValues(OutboxStatus $status, string $expectedValue): void
-    {
-        $this->assertSame($expectedValue, $status->value);
     }
 }

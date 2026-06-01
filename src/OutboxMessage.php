@@ -20,6 +20,7 @@ final readonly class OutboxMessage
         private DateTimeImmutable $createdAt,
         private int $attempts = 0,
         private ?DateTimeImmutable $lastAttemptAt = null,
+        private ?string $aggregateId = null,
     ) {
         if ($id === '') {
             throw new InvalidArgumentException('Message id must not be empty');
@@ -37,13 +38,16 @@ final readonly class OutboxMessage
     public static function create(
         string $type,
         string $payload,
+        ?string $aggregateId = null,
+        ?DateTimeImmutable $createdAt = null,
     ): self {
         return new self(
             id: bin2hex(random_bytes(16)),
             type: $type,
             payload: $payload,
             status: OutboxStatus::Pending,
-            createdAt: new DateTimeImmutable(),
+            createdAt: $createdAt ?? new DateTimeImmutable(),
+            aggregateId: $aggregateId,
         );
     }
 
@@ -82,6 +86,11 @@ final readonly class OutboxMessage
         return $this->lastAttemptAt;
     }
 
+    public function getAggregateId(): ?string
+    {
+        return $this->aggregateId;
+    }
+
     public function withStatus(OutboxStatus $status): self
     {
         return new self(
@@ -92,10 +101,11 @@ final readonly class OutboxMessage
             createdAt: $this->createdAt,
             attempts: $this->attempts,
             lastAttemptAt: $this->lastAttemptAt,
+            aggregateId: $this->aggregateId,
         );
     }
 
-    public function withAttempt(): self
+    public function withAttempt(DateTimeImmutable $at): self
     {
         return new self(
             id: $this->id,
@@ -104,7 +114,8 @@ final readonly class OutboxMessage
             status: $this->status,
             createdAt: $this->createdAt,
             attempts: $this->attempts + 1,
-            lastAttemptAt: new DateTimeImmutable(),
+            lastAttemptAt: $at,
+            aggregateId: $this->aggregateId,
         );
     }
 }

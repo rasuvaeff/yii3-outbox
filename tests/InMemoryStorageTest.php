@@ -8,7 +8,6 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
-use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 
 #[CoversClass(InMemoryStorage::class)]
@@ -25,14 +24,18 @@ final class InMemoryStorageTest extends TestCase
     #[Test]
     public function savesAndRetrievesMessage(): void
     {
-        $message = OutboxMessage::create(type: 'test', payload: '{}');
+        $message = OutboxMessageBuilder::create()
+            ->withId('msg-1')
+            ->withAggregateId('order-42')
+            ->build();
 
         $this->fixture->save($message);
 
-        $retrieved = $this->fixture->getById($message->getId());
+        $retrieved = $this->fixture->getById('msg-1');
 
         $this->assertNotNull($retrieved);
-        $this->assertSame($message->getId(), $retrieved->getId());
+        $this->assertSame('msg-1', $retrieved->getId());
+        $this->assertSame('order-42', $retrieved->getAggregateId());
     }
 
     #[Test]

@@ -9,6 +9,7 @@ use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 
 #[CoversClass(RetryPolicy::class)]
@@ -33,7 +34,7 @@ final class RetryPolicyTest extends TestCase
     public function shouldRetryWhenAttemptsNotExhausted(): void
     {
         $message = OutboxMessageBuilder::create()
-            ->withStatus(\Rasuvaeff\Yii3Outbox\OutboxStatus::Pending)
+            ->withStatus(OutboxStatus::Pending)
             ->withAttempts(2)
             ->build();
 
@@ -44,7 +45,7 @@ final class RetryPolicyTest extends TestCase
     public function shouldNotRetryWhenAttemptsExhausted(): void
     {
         $message = OutboxMessageBuilder::create()
-            ->withStatus(\Rasuvaeff\Yii3Outbox\OutboxStatus::Pending)
+            ->withStatus(OutboxStatus::Pending)
             ->withAttempts(3)
             ->build();
 
@@ -55,7 +56,7 @@ final class RetryPolicyTest extends TestCase
     public function shouldNotRetryWhenAlreadyPublished(): void
     {
         $message = OutboxMessageBuilder::create()
-            ->withStatus(\Rasuvaeff\Yii3Outbox\OutboxStatus::Published)
+            ->withStatus(OutboxStatus::Published)
             ->withAttempts(0)
             ->build();
 
@@ -66,36 +67,42 @@ final class RetryPolicyTest extends TestCase
     public function isReadyForRetryWithNoLastAttempt(): void
     {
         $message = OutboxMessageBuilder::create()
-            ->withStatus(\Rasuvaeff\Yii3Outbox\OutboxStatus::Pending)
+            ->withStatus(OutboxStatus::Pending)
             ->withAttempts(0)
             ->withLastAttemptAt(null)
             ->build();
 
-        $this->assertTrue($this->fixture->isReadyForRetry($message));
+        $this->assertTrue($this->fixture->isReadyForRetry($message, new DateTimeImmutable()));
     }
 
     #[Test]
     public function isReadyForRetryAfterDelayPassed(): void
     {
+        $lastAttempt = new DateTimeImmutable('2026-06-01 12:00:00');
+        $now = new DateTimeImmutable('2026-06-01 12:02:00'); // 2 minutes later
+
         $message = OutboxMessageBuilder::create()
-            ->withStatus(\Rasuvaeff\Yii3Outbox\OutboxStatus::Pending)
+            ->withStatus(OutboxStatus::Pending)
             ->withAttempts(1)
-            ->withLastAttemptAt(new DateTimeImmutable('-120 seconds'))
+            ->withLastAttemptAt($lastAttempt)
             ->build();
 
-        $this->assertTrue($this->fixture->isReadyForRetry($message));
+        $this->assertTrue($this->fixture->isReadyForRetry($message, $now));
     }
 
     #[Test]
     public function isNotReadyForRetryBeforeDelay(): void
     {
+        $lastAttempt = new DateTimeImmutable('2026-06-01 12:00:00');
+        $now = new DateTimeImmutable('2026-06-01 12:00:30'); // only 30s later
+
         $message = OutboxMessageBuilder::create()
-            ->withStatus(\Rasuvaeff\Yii3Outbox\OutboxStatus::Pending)
+            ->withStatus(OutboxStatus::Pending)
             ->withAttempts(1)
-            ->withLastAttemptAt(new DateTimeImmutable())
+            ->withLastAttemptAt($lastAttempt)
             ->build();
 
-        $this->assertFalse($this->fixture->isReadyForRetry($message));
+        $this->assertFalse($this->fixture->isReadyForRetry($message, $now));
     }
 
     #[Test]
@@ -105,6 +112,22 @@ final class RetryPolicyTest extends TestCase
         $this->expectExceptionMessage('Max attempts must be at least 1');
 
         new RetryPolicy(maxAttempts: 0);
+    }
+
+    #[Test]
+    public function allowsMaxAttemptsOfOne(): void
+    {
+        $policy = new RetryPolicy(maxAttempts: 1);
+
+        $this->assertSame(1, $policy->getMaxAttempts());
+    }
+
+    #[Test]
+    public function allowsZeroDelay(): void
+    {
+        $policy = new RetryPolicy(delaySeconds: 0);
+
+        $this->assertSame(0, $policy->getDelaySeconds());
     }
 
     #[Test]

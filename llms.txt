@@ -10,10 +10,26 @@ composer require rasuvaeff/yii3-outbox
 
 - Core has no DB dependency. Implement `StorageInterface` for persistence.
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
-- `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt()`.
+- `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
 - `Processor::process()` increments attempts before calling publisher.
+- Failed publish keeps message as `Pending` if retries remain; marks `Failed` only when exhausted.
+- `Processor` and `Outbox` require a `Psr\Clock\ClockInterface` implementation.
 
 ## API
+
+### Outbox
+
+```php
+use Rasuvaeff\Yii3Outbox\Outbox;
+
+$outbox = new Outbox(storage: $storage, clock: $clock);
+
+$message = $outbox->record(
+    type: 'order.created',
+    payload: json_encode(['orderId' => 42]),
+    aggregateId: 'order-42', // optional
+);
+```
 
 ### OutboxMessage
 
@@ -24,18 +40,21 @@ use Rasuvaeff\Yii3Outbox\OutboxStatus;
 $message = OutboxMessage::create(
     type: 'order.created',
     payload: '{"orderId": 42}',
+    aggregateId: 'order-42', // optional
+    createdAt: $clock->now(), // optional, defaults to new DateTimeImmutable()
 );
 
-$message->getId();          // string, 32-char hex
-$message->getType();        // string
-$message->getPayload();     // string
-$message->getStatus();      // OutboxStatus::Pending
-$message->getCreatedAt();   // DateTimeImmutable
-$message->getAttempts();    // int
+$message->getId();            // string, 32-char hex
+$message->getType();          // string
+$message->getPayload();       // string
+$message->getStatus();        // OutboxStatus::Pending
+$message->getCreatedAt();     // DateTimeImmutable
+$message->getAttempts();      // int
 $message->getLastAttemptAt(); // ?DateTimeImmutable
+$message->getAggregateId();   // ?string
 
-$updated = $message->withStatus(OutboxStatus::Published);
-$attempted = $message->withAttempt();
+$updated  = $message->withStatus(OutboxStatus::Published);
+$attempted = $message->withAttempt($clock->now()); // increments attempts, sets lastAttemptAt
 ```
 
 ### OutboxStatus
@@ -43,9 +62,9 @@ $attempted = $message->withAttempt();
 ```php
 enum OutboxStatus: string
 {
-    case Pending = 'pending';
+    case Pending   = 'pending';
     case Published = 'published';
-    case Failed = 'failed';
+    case Failed    = 'failed';
 }
 ```
 
@@ -55,6 +74,7 @@ enum OutboxStatus: string
 interface StorageInterface
 {
     public function save(OutboxMessage $message): void;
+    // findPending must return Pending messages, including those with attempts > 0
     public function findPending(int $limit = 100): array;
     public function markPublished(OutboxMessage $message): void;
     public function markFailed(OutboxMessage $message): void;
@@ -83,8 +103,8 @@ throw new PublishException(message: 'Failed', outboxMessage: $message, previous:
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
-$policy->shouldRetry($message);      // bool
-$policy->isReadyForRetry($message);  // bool
+$policy->shouldRetry($message);             // bool — attempts < maxAttempts?
+$policy->isReadyForRetry($message, $now);   // bool — delay elapsed?
 ```
 
 ### Processor
@@ -96,10 +116,16 @@ $processor = new Processor(
     storage: $storage,
     publisher: $publisher,
     retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 60),
-    batchSize: 100,
+    clock: $clock,
+    batchSize: 100,        // optional
+    logger: $logger,       // optional, PSR-3
 );
 
-$processed = $processor->process(); // int
+$result = $processor->process();
+$result->published; // int
+$result->failed;    // int — exceptions this run (message stays Pending if retries remain)
+$result->skipped;   // int — not ready for retry
+$result->total();   // int
 ```
 
 ### Serializer

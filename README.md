@@ -16,6 +16,7 @@ for reliably publishing messages with configurable retry policies.
 ## Requirements
 
 - PHP 8.3+
+- `psr/clock` ^1.0
 - `psr/log` ^3.0
 
 ## Installation
@@ -26,14 +27,24 @@ composer require rasuvaeff/yii3-outbox
 
 ## Usage
 
-### Creating a message
+### Recording a message
 
 ```php
-use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use DateTimeImmutable;
+use Psr\Clock\ClockInterface;
+use Rasuvaeff\Yii3Outbox\InMemoryStorage;
+use Rasuvaeff\Yii3Outbox\Outbox;
 
-$message = OutboxMessage::create(
+$clock = new class implements ClockInterface {
+    public function now(): DateTimeImmutable { return new DateTimeImmutable(); }
+};
+
+$outbox = new Outbox(storage: $storage, clock: $clock);
+
+$message = $outbox->record(
     type: 'order.created',
-    payload: '{"orderId": 42}',
+    payload: json_encode(['orderId' => 42]),
+    aggregateId: 'order-42',
 );
 ```
 
@@ -47,12 +58,13 @@ final class DbStorage implements StorageInterface
 {
     public function save(OutboxMessage $message): void
     {
-        // INSERT INTO outbox ...
+        // INSERT INTO outbox ... ON CONFLICT(id) DO UPDATE ...
     }
 
     public function findPending(int $limit = 100): array
     {
         // SELECT * FROM outbox WHERE status = 'pending' LIMIT $limit
+        // For retry support, also return status = 'pending' with attempts > 0
     }
 
     public function markPublished(OutboxMessage $message): void
@@ -106,10 +118,27 @@ $processor = new Processor(
     storage: $storage,
     publisher: $publisher,
     retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 60),
+    clock: $clock,
     batchSize: 100,
 );
 
-$processed = $processor->process();
+$result = $processor->process();
+// $result->published — successfully published
+// $result->failed   — publish exceptions (message kept Pending if retries remain)
+// $result->skipped  — not yet ready for retry
+```
+
+### Retry behaviour
+
+When a publish fails:
+- If attempts < `maxAttempts` → message stays `Pending`, will be retried after `delaySeconds`
+- If attempts >= `maxAttempts` → message is marked `Failed` (terminal)
+
+```php
+$policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
+
+$policy->shouldRetry($message);          // bool — attempts remaining?
+$policy->isReadyForRetry($message, $now); // bool — delay elapsed?
 ```
 
 ### Using InMemoryStorage for tests
@@ -121,15 +150,24 @@ $storage = new InMemoryStorage();
 $storage->save($message);
 
 $pending = $storage->findPending();
+$storage->count();
+$storage->clear();
 ```
 
 ## API reference
+
+### Outbox
+
+| Method | Description |
+|---|---|
+| `__construct(storage, clock)` | Main entry point |
+| `record(type, payload, aggregateId?)` | Create and persist message, returns `OutboxMessage` |
 
 ### OutboxMessage
 
 | Method | Description |
 |---|---|
-| `create(type, payload)` | Factory with auto-generated ID |
+| `create(type, payload, aggregateId?, createdAt?)` | Factory with auto-generated ID |
 | `getId()` | Message ID (32-char hex) |
 | `getType()` | Message type |
 | `getPayload()` | Raw payload string |
@@ -137,8 +175,9 @@ $pending = $storage->findPending();
 | `getCreatedAt()` | `DateTimeImmutable` |
 | `getAttempts()` | Number of publish attempts |
 | `getLastAttemptAt()` | `?DateTimeImmutable` |
+| `getAggregateId()` | `?string` |
 | `withStatus(status)` | Returns new instance with status |
-| `withAttempt()` | Returns new instance with incremented attempts |
+| `withAttempt(at)` | Returns new instance with incremented attempts and timestamp |
 
 ### OutboxStatus
 
@@ -154,14 +193,23 @@ $pending = $storage->findPending();
 |---|---|
 | `__construct(maxAttempts, delaySeconds)` | Default: 3 attempts, 60s delay |
 | `shouldRetry(message)` | Checks attempt count |
-| `isReadyForRetry(message)` | Checks attempts + delay elapsed |
+| `isReadyForRetry(message, now)` | Checks attempts + delay elapsed |
 
 ### Processor
 
 | Method | Description |
 |---|---|
-| `__construct(storage, publisher, retryPolicy, batchSize, logger)` | Default batch: 100 |
-| `process()` | Returns number of processed messages |
+| `__construct(storage, publisher, retryPolicy, clock, batchSize, logger)` | Default batch: 100 |
+| `process()` | Returns `ProcessingResult` |
+
+### ProcessingResult
+
+| Property/Method | Description |
+|---|---|
+| `$published` | Count of successfully published messages |
+| `$failed` | Count of publish exceptions this run |
+| `$skipped` | Count of messages not ready for retry |
+| `total()` | Sum of all counters |
 
 ### Serializer
 

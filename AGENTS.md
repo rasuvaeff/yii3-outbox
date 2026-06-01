@@ -9,14 +9,16 @@ It provides a stateless core for storing messages in an outbox and publishing
 them reliably with retry policies. Namespace: `Rasuvaeff\Yii3Outbox`.
 
 Public API:
-- `OutboxMessage` — immutable message value object
+- `Outbox` — facade: `record(type, payload, aggregateId?)` → `OutboxMessage`
+- `OutboxMessage` — immutable message value object with `aggregateId` support
 - `OutboxStatus` — enum: `Pending`, `Published`, `Failed`
 - `SerializerInterface` / `Serializer` — JSON serialization
-- `StorageInterface` — storage contract (save, findPending, markPublished, markFailed)
+- `StorageInterface` — storage contract (save, findPending, markPublished, markFailed, getById)
 - `PublisherInterface` — publishing contract
 - `PublishException` — thrown on publish failure
 - `RetryPolicy` — configurable max attempts and delay
-- `Processor` — fetches pending messages and publishes them
+- `Processor` — fetches pending messages and publishes them, returns `ProcessingResult`
+- `ProcessingResult` — published/failed/skipped counters
 - `InMemoryStorage` — test implementation of `StorageInterface`
 
 DB storage is a separate package: `rasuvaeff/yii3-outbox-db`.
@@ -54,10 +56,17 @@ make test
 
 ## Invariants & gotchas
 
-- `OutboxMessage` is `final readonly` — use `withStatus()` and `withAttempt()` for modifications.
-- `Processor::process()` increments attempts before publishing.
-- `RetryPolicy::isReadyForRetry()` checks both attempt count and delay elapsed.
+- `OutboxMessage` is `final readonly` — use `withStatus(OutboxStatus)` and
+  `withAttempt(DateTimeImmutable)` for modifications (both return new instances).
+- `Processor::process()` increments attempts before publishing via `withAttempt($now)`.
+- **Retry flow**: if publish fails and `shouldRetry` returns true → `storage->save($message)`
+  (keeps status `Pending`). Only calls `markFailed` when retries are exhausted.
+- `RetryPolicy::isReadyForRetry()` takes `DateTimeImmutable $now` — caller provides
+  the clock, not the policy.
+- `findPending` must return `Pending` messages with any attempt count — `RetryPolicy`
+  filters which are ready for retry.
 - `InMemoryStorage` does not persist between requests — test use only.
+- `Outbox` and `Processor` require `Psr\Clock\ClockInterface` injection.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types.
 

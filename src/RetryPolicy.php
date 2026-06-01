@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Outbox;
 
 use DateTimeImmutable;
+use InvalidArgumentException;
 
 /**
  * @api
@@ -16,11 +17,11 @@ final readonly class RetryPolicy
         private int $delaySeconds = 60,
     ) {
         if ($maxAttempts < 1) {
-            throw new \InvalidArgumentException('Max attempts must be at least 1');
+            throw new InvalidArgumentException('Max attempts must be at least 1');
         }
 
         if ($delaySeconds < 0) {
-            throw new \InvalidArgumentException('Delay seconds must be non-negative');
+            throw new InvalidArgumentException('Delay seconds must be non-negative');
         }
     }
 
@@ -43,7 +44,7 @@ final readonly class RetryPolicy
         return $message->getAttempts() < $this->maxAttempts;
     }
 
-    public function isReadyForRetry(OutboxMessage $message): bool
+    public function isReadyForRetry(OutboxMessage $message, DateTimeImmutable $now): bool
     {
         if (!$this->shouldRetry($message)) {
             return false;
@@ -57,6 +58,6 @@ final readonly class RetryPolicy
 
         $nextAttemptAt = $lastAttempt->modify('+' . $this->delaySeconds . ' seconds');
 
-        return new DateTimeImmutable() >= $nextAttemptAt;
+        return $now >= $nextAttemptAt;
     }
 }

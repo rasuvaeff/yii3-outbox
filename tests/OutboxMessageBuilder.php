@@ -17,6 +17,7 @@ final class OutboxMessageBuilder
     private DateTimeImmutable $createdAt;
     private int $attempts = 0;
     private ?DateTimeImmutable $lastAttemptAt = null;
+    private ?string $aggregateId = null;
 
     private function __construct()
     {
@@ -56,6 +57,13 @@ final class OutboxMessageBuilder
         return $this;
     }
 
+    public function withAggregateId(?string $aggregateId): self
+    {
+        $this->aggregateId = $aggregateId;
+
+        return $this;
+    }
+
     public function build(): OutboxMessage
     {
         return new OutboxMessage(
@@ -66,6 +74,7 @@ final class OutboxMessageBuilder
             createdAt: $this->createdAt,
             attempts: $this->attempts,
             lastAttemptAt: $this->lastAttemptAt,
+            aggregateId: $this->aggregateId,
         );
     }
 }
