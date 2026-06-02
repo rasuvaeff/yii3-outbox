@@ -1,6 +1,6 @@
 # yii3-outbox
 
-Install:
+## Install
 
 ```bash
 composer require rasuvaeff/yii3-outbox
