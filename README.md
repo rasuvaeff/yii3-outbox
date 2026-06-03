@@ -6,6 +6,7 @@
 [![Static analysis](https://github.com/rasuvaeff/yii3-outbox/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/rasuvaeff/yii3-outbox/actions)
 [![Coverage](https://codecov.io/gh/rasuvaeff/yii3-outbox/branch/master/graph/badge.svg)](https://codecov.io/gh/rasuvaeff/yii3-outbox)
 [![Psalm Level](https://shepherd.dev/github/rasuvaeff/yii3-outbox/level.svg)](https://shepherd.dev/github/rasuvaeff/yii3-outbox)
+[![PHP](https://img.shields.io/packagist/dependency-v/rasuvaeff/yii3-outbox/php)](https://packagist.org/packages/rasuvaeff/yii3-outbox)
 [![License](https://poser.pugx.org/rasuvaeff/yii3-outbox/license)](https://packagist.org/packages/rasuvaeff/yii3-outbox)
 
 Transactional outbox pattern implementation for Yii3. Provides a stateless core
