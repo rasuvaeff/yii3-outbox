@@ -1,6 +1,13 @@
 {
     "name": "rasuvaeff/yii3-outbox",
     "description": "Transactional outbox pattern for Yii3",
+    "keywords": [
+        "event-driven",
+        "message-queue",
+        "outbox",
+        "transactional",
+        "yii3"
+    ],
     "license": "BSD-3-Clause",
     "type": "library",
     "authors": [
