@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
+use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 
 #[CoversClass(InMemoryStorage::class)]
@@ -80,6 +81,40 @@ final class InMemoryStorageTest extends TestCase
         $result = $this->fixture->findPending(limit: 3);
 
         $this->assertCount(3, $result);
+    }
+
+    #[Test]
+    public function findPendingFiltersByType(): void
+    {
+        $this->fixture->save(
+            OutboxMessageBuilder::create()->withId('exp-1')->withType('ab.exposure')->build(),
+        );
+        $this->fixture->save(
+            OutboxMessageBuilder::create()->withId('conv-1')->withType('ab.conversion')->build(),
+        );
+        $this->fixture->save(
+            OutboxMessageBuilder::create()->withId('other-1')->withType('order.created')->build(),
+        );
+
+        $result = $this->fixture->findPending(types: ['ab.exposure', 'ab.conversion']);
+
+        $this->assertSame(['exp-1', 'conv-1'], array_map(
+            static fn(OutboxMessage $message): string => $message->getId(),
+            $result,
+        ));
+    }
+
+    #[Test]
+    public function findPendingWithEmptyTypesReturnsAllTypes(): void
+    {
+        $this->fixture->save(
+            OutboxMessageBuilder::create()->withId('exp-1')->withType('ab.exposure')->build(),
+        );
+        $this->fixture->save(
+            OutboxMessageBuilder::create()->withId('other-1')->withType('order.created')->build(),
+        );
+
+        $this->assertCount(2, $this->fixture->findPending());
     }
 
     #[Test]

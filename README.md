@@ -61,9 +61,10 @@ final class DbStorage implements StorageInterface
         // INSERT INTO outbox ... ON CONFLICT(id) DO UPDATE ...
     }
 
-    public function findPending(int $limit = 100): array
+    public function findPending(array $types = [], int $limit = 1000): array
     {
-        // SELECT * FROM outbox WHERE status = 'pending' LIMIT $limit
+        // SELECT * FROM outbox WHERE status = 'pending'
+        //   [AND type IN (:types)] LIMIT :limit  -- empty $types = all types
         // For retry support, also return status = 'pending' with attempts > 0
     }
 

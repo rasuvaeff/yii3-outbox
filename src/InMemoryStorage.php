@@ -25,17 +25,23 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate
     }
 
     #[\Override]
-    public function findPending(int $limit = 100): array
+    public function findPending(array $types = [], int $limit = 1000): array
     {
         $pending = [];
 
         foreach ($this->messages as $message) {
-            if ($message->getStatus() === OutboxStatus::Pending) {
-                $pending[] = $message;
+            if ($message->getStatus() !== OutboxStatus::Pending) {
+                continue;
+            }
 
-                if (count($pending) >= $limit) {
-                    break;
-                }
+            if ($types !== [] && !in_array($message->getType(), $types, true)) {
+                continue;
+            }
+
+            $pending[] = $message;
+
+            if (count($pending) >= $limit) {
+                break;
             }
         }
 

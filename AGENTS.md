@@ -69,8 +69,11 @@ make release-check
   (keeps status `Pending`). Only calls `markFailed` when retries are exhausted.
 - `RetryPolicy::isReadyForRetry()` takes `DateTimeImmutable $now` — caller provides
   the clock, not the policy.
-- `findPending` must return `Pending` messages with any attempt count — `RetryPolicy`
-  filters which are ready for retry.
+- `findPending(array $types = [], int $limit = 1000)` must return `Pending`
+  messages with any attempt count — `RetryPolicy` filters which are ready for
+  retry. `$types` restricts to those message types (empty = all) so several
+  consumers (e.g. a generic `Processor` and a ClickHouse exporter) can share one
+  outbox without competing for each other's messages.
 - `InMemoryStorage` does not persist between requests — test use only.
 - `Outbox` and `Processor` require `Psr\Clock\ClockInterface` injection.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,

@@ -36,6 +36,13 @@ final class OutboxMessageBuilder
         return $this;
     }
 
+    public function withType(string $type): self
+    {
+        $this->type = $type;
+
+        return $this;
+    }
+
     public function withStatus(OutboxStatus $status): self
     {
         $this->status = $status;

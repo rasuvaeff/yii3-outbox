@@ -12,9 +12,11 @@ interface StorageInterface
     public function save(OutboxMessage $message): void;
 
     /**
+     * @param list<string> $types restrict to these message types; empty = all types
+     *
      * @return list<OutboxMessage>
      */
-    public function findPending(int $limit = 100): array;
+    public function findPending(array $types = [], int $limit = 1000): array;
 
     public function markPublished(OutboxMessage $message): void;
 

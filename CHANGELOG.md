@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Outbox` facade — records messages via `record(type, payload, aggregateId?)`.
 - `OutboxMessage` immutable value object with `withStatus()` and `withAttempt()` modifiers.
 - `OutboxStatus` enum: `Pending`, `Published`, `Failed`.
-- `StorageInterface` and `PublisherInterface` contracts for adapter implementations.
+- `StorageInterface` and `PublisherInterface` contracts for adapter implementations. `findPending(array $types = [], int $limit = 1000)` filters by message type so several consumers can share one outbox.
 - `Processor` — fetches pending messages, publishes them, handles retries; returns `ProcessingResult`.
 - `RetryPolicy` — configurable `maxAttempts` and `delaySeconds`.
 - `Serializer` — JSON serialization of `OutboxMessage` for transport.

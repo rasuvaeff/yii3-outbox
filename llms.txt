@@ -75,7 +75,8 @@ interface StorageInterface
 {
     public function save(OutboxMessage $message): void;
     // findPending must return Pending messages, including those with attempts > 0
-    public function findPending(int $limit = 100): array;
+    // $types filters by message type (empty = all); lets several consumers share one outbox
+    public function findPending(array $types = [], int $limit = 1000): array;
     public function markPublished(OutboxMessage $message): void;
     public function markFailed(OutboxMessage $message): void;
     public function getById(string $id): ?OutboxMessage;
