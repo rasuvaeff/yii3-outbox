@@ -22,7 +22,7 @@
         "source": "https://github.com/rasuvaeff/yii3-outbox"
     },
     "require": {
-        "php": "^8.3",
+        "php": "8.1 - 8.5",
         "psr/clock": "^1.0",
         "psr/log": "^3.0"
     },
