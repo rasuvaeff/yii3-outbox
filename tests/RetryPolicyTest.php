@@ -106,6 +106,35 @@ final class RetryPolicyTest extends TestCase
     }
 
     #[Test]
+    public function isReadyForRetryAtExactDelayBoundary(): void
+    {
+        $lastAttempt = new DateTimeImmutable('2026-06-01 12:00:00');
+        $now = new DateTimeImmutable('2026-06-01 12:01:00'); // exactly 60s (the delay) later
+
+        $message = OutboxMessageBuilder::create()
+            ->withStatus(OutboxStatus::Pending)
+            ->withAttempts(1)
+            ->withLastAttemptAt($lastAttempt)
+            ->build();
+
+        // now == lastAttempt + delay: ready under `>=`, not ready under `>`.
+        $this->assertTrue($this->fixture->isReadyForRetry($message, $now));
+    }
+
+    #[Test]
+    public function isNotReadyForRetryWhenAttemptsExhausted(): void
+    {
+        $message = OutboxMessageBuilder::create()
+            ->withStatus(OutboxStatus::Pending)
+            ->withAttempts(3) // == maxAttempts, so shouldRetry() is false
+            ->withLastAttemptAt(new DateTimeImmutable('2020-01-01 00:00:00'))
+            ->build();
+
+        // The delay is long past, so only the exhausted-attempts guard keeps this false.
+        $this->assertFalse($this->fixture->isReadyForRetry($message, new DateTimeImmutable('2026-06-01 12:00:00')));
+    }
+
+    #[Test]
     public function throwsOnMaxAttemptsLessThanOne(): void
     {
         $this->expectException(InvalidArgumentException::class);

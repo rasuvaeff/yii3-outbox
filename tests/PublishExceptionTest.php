@@ -52,4 +52,15 @@ final class PublishExceptionTest extends TestCase
 
         $this->assertSame(42, $exception->getCode());
     }
+
+    #[Test]
+    public function defaultsToErrorCodeZero(): void
+    {
+        $exception = new PublishException(
+            message: 'Failed',
+            outboxMessage: OutboxMessage::create(type: 'test', payload: '{}'),
+        );
+
+        $this->assertSame(0, $exception->getCode());
+    }
 }

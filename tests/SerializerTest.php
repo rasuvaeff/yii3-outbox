@@ -182,4 +182,59 @@ final class SerializerTest extends TestCase
 
         $this->assertNull($restored->getAggregateId());
     }
+
+    #[Test]
+    public function throwsOnNonStringType(): void
+    {
+        $json = '{"id":"a","type":123,"payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "type" must be a string');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function throwsOnNonStringPayload(): void
+    {
+        $json = '{"id":"a","type":"t","payload":123,"status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "payload" must be a string');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function throwsOnNonStringCreatedAt(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":123,"attempts":0}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "createdAt" must be a string');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function throwsOnNonStringLastAttemptAt(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0,"lastAttemptAt":123}';
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field "lastAttemptAt" must be a string');
+
+        $this->fixture->deserialize($json);
+    }
+
+    #[Test]
+    public function serializeThrowsWhenPayloadIsNotUtf8(): void
+    {
+        $message = OutboxMessage::create(type: 't', payload: "\xB1\x31"); // invalid UTF-8
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Failed to serialize message');
+
+        $this->fixture->serialize($message);
+    }
 }

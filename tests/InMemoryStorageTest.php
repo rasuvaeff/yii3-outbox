@@ -188,4 +188,31 @@ final class InMemoryStorageTest extends TestCase
 
         $this->assertSame(['a', 'b'], $ids);
     }
+
+    #[Test]
+    public function findPendingSkipsNonPendingThatPrecedesAPendingMessage(): void
+    {
+        // Non-pending first: the status filter must `continue`, not `break`, or the
+        // following pending message would be missed.
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('published-first')->withStatus(OutboxStatus::Published)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pending-after')->withStatus(OutboxStatus::Pending)->build());
+
+        $this->assertSame(['pending-after'], array_map(
+            static fn(OutboxMessage $message): string => $message->getId(),
+            $this->fixture->findPending(),
+        ));
+    }
+
+    #[Test]
+    public function findPendingSkipsNonMatchingTypeThatPrecedesAMatch(): void
+    {
+        // Non-matching type first: the type filter must `continue`, not `break`.
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('other-first')->withType('order.created')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('exp-after')->withType('ab.exposure')->build());
+
+        $this->assertSame(['exp-after'], array_map(
+            static fn(OutboxMessage $message): string => $message->getId(),
+            $this->fixture->findPending(types: ['ab.exposure']),
+        ));
+    }
 }
