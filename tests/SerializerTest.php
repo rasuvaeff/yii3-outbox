@@ -107,6 +107,7 @@ final class SerializerTest extends TestCase
     public function throwsOnInvalidJson(): void
     {
         $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Failed to deserialize message: Syntax error');
 
         $this->fixture->deserialize('not valid json');
     }
@@ -233,7 +234,7 @@ final class SerializerTest extends TestCase
         $message = OutboxMessage::create(type: 't', payload: "\xB1\x31"); // invalid UTF-8
 
         $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Failed to serialize message');
+        $this->expectExceptionMessage('Failed to serialize message: Malformed UTF-8 characters');
 
         $this->fixture->serialize($message);
     }
