@@ -215,4 +215,68 @@ final class InMemoryStorageTest extends TestCase
             $this->fixture->findPending(types: ['ab.exposure']),
         ));
     }
+
+    #[Test]
+    public function claimTransitionsPendingToProcessing(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->withStatus(OutboxStatus::Pending)->build());
+
+        $claimed = $this->fixture->claim();
+
+        $this->assertCount(1, $claimed);
+        $this->assertSame('a', $claimed[0]->getId());
+        $this->assertSame(OutboxStatus::Processing, $claimed[0]->getStatus());
+        $this->assertSame(OutboxStatus::Processing, $this->fixture->getById('a')?->getStatus());
+    }
+
+    #[Test]
+    public function claimDoesNotReturnNonPendingMessages(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pub')->withStatus(OutboxStatus::Published)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('proc')->withStatus(OutboxStatus::Processing)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('fail')->withStatus(OutboxStatus::Failed)->build());
+
+        $this->assertSame([], $this->fixture->claim());
+    }
+
+    #[Test]
+    public function claimRespectsLimit(): void
+    {
+        for ($i = 1; $i <= 5; $i++) {
+            $this->fixture->save(OutboxMessageBuilder::create()->withId('m' . $i)->withStatus(OutboxStatus::Pending)->build());
+        }
+
+        $claimed = $this->fixture->claim(limit: 2);
+
+        $this->assertCount(2, $claimed);
+        $this->assertCount(3, $this->fixture->findPending());
+    }
+
+    #[Test]
+    public function claimFiltersByType(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('exp')->withType('ab.exposure')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('conv')->withType('ab.conversion')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('order')->withType('order.created')->build());
+
+        $claimed = $this->fixture->claim(types: ['ab.exposure', 'ab.conversion']);
+
+        $this->assertSame(['exp', 'conv'], array_map(
+            static fn(OutboxMessage $message): string => $message->getId(),
+            $claimed,
+        ));
+        $this->assertCount(1, $this->fixture->findPending());
+        $this->assertSame('order', $this->fixture->findPending()[0]->getId());
+    }
+
+    #[Test]
+    public function claimSecondCallDoesNotReturnAlreadyClaimedMessages(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->withStatus(OutboxStatus::Pending)->build());
+
+        $this->fixture->claim();
+        $second = $this->fixture->claim();
+
+        $this->assertSame([], $second);
+    }
 }

@@ -17,8 +17,9 @@ final class OutboxStatusTest extends TestCase
     {
         $cases = OutboxStatus::cases();
 
-        $this->assertCount(3, $cases);
+        $this->assertCount(4, $cases);
         $this->assertSame('pending', OutboxStatus::Pending->value);
+        $this->assertSame('processing', OutboxStatus::Processing->value);
         $this->assertSame('published', OutboxStatus::Published->value);
         $this->assertSame('failed', OutboxStatus::Failed->value);
     }
@@ -27,6 +28,7 @@ final class OutboxStatusTest extends TestCase
     public function createsFromValue(): void
     {
         $this->assertSame(OutboxStatus::Pending, OutboxStatus::from('pending'));
+        $this->assertSame(OutboxStatus::Processing, OutboxStatus::from('processing'));
         $this->assertSame(OutboxStatus::Published, OutboxStatus::from('published'));
         $this->assertSame(OutboxStatus::Failed, OutboxStatus::from('failed'));
     }

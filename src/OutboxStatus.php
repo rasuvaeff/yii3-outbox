@@ -10,6 +10,7 @@ namespace Rasuvaeff\Yii3Outbox;
 enum OutboxStatus: string
 {
     case Pending = 'pending';
+    case Processing = 'processing';
     case Published = 'published';
     case Failed = 'failed';
 }

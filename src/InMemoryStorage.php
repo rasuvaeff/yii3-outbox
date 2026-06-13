@@ -49,6 +49,32 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate
     }
 
     #[\Override]
+    public function claim(array $types = [], int $limit = 1000): array
+    {
+        $claimed = [];
+
+        foreach ($this->messages as $id => $message) {
+            if ($message->getStatus() !== OutboxStatus::Pending) {
+                continue;
+            }
+
+            if ($types !== [] && !in_array($message->getType(), $types, true)) {
+                continue;
+            }
+
+            $processing = $message->withStatus(OutboxStatus::Processing);
+            $this->messages[$id] = $processing;
+            $claimed[] = $processing;
+
+            if (count($claimed) >= $limit) {
+                break;
+            }
+        }
+
+        return $claimed;
+    }
+
+    #[\Override]
     public function markPublished(OutboxMessage $message): void
     {
         $this->messages[$message->getId()] = $message->withStatus(OutboxStatus::Published);

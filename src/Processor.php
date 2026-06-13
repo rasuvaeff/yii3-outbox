@@ -29,7 +29,7 @@ final readonly class Processor
 
     public function process(): ProcessingResult
     {
-        $messages = $this->storage->findPending(limit: $this->batchSize);
+        $messages = $this->storage->claim(limit: $this->batchSize);
         $published = 0;
         $failed = 0;
         $skipped = 0;
@@ -37,6 +37,7 @@ final readonly class Processor
 
         foreach ($messages as $message) {
             if (!$this->retryPolicy->isReadyForRetry($message, $now)) {
+                $this->storage->save($message->withStatus(OutboxStatus::Pending));
                 $skipped++;
 
                 continue;
@@ -57,7 +58,7 @@ final readonly class Processor
                 ]);
 
                 if ($this->retryPolicy->shouldRetry($message)) {
-                    $this->storage->save($message);
+                    $this->storage->save($message->withStatus(OutboxStatus::Pending));
                 } else {
                     $this->storage->markFailed($message);
                 }
