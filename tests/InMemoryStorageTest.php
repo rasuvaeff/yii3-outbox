@@ -272,4 +272,26 @@ final class InMemoryStorageTest
 
         Assert::same($second, []);
     }
+
+    public function claimSkipsNonPendingThatPrecedesAPendingMessage(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pub')->withStatus(OutboxStatus::Published)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pending')->withStatus(OutboxStatus::Pending)->build());
+
+        $claimed = $this->fixture->claim();
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'pending');
+    }
+
+    public function claimSkipsNonMatchingTypeThatPrecedesAMatch(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('other')->withType('order.created')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('exp')->withType('ab.exposure')->build());
+
+        $claimed = $this->fixture->claim(types: ['ab.exposure']);
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'exp');
+    }
 }

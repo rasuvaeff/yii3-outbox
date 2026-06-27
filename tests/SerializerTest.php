@@ -105,16 +105,25 @@ final class SerializerTest
 
     public function throwsOnInvalidJson(): void
     {
-        Expect::exception(InvalidArgumentException::class);
-
-        $this->fixture->deserialize('not valid json');
+        try {
+            $this->fixture->deserialize('not valid json');
+            Assert::fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            Assert::true(str_starts_with($e->getMessage(), 'Failed to deserialize message: '));
+            Assert::true(strlen($e->getMessage()) > strlen('Failed to deserialize message: '));
+        }
     }
 
     public function throwsOnMissingRequiredField(): void
     {
-        Expect::exception(InvalidArgumentException::class);
+        $json = '{"type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
 
-        $this->fixture->deserialize('{"type":"test"}');
+        try {
+            $this->fixture->deserialize($json);
+            Assert::fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            Assert::string($e->getMessage())->contains('Missing required field: id');
+        }
     }
 
     public function throwsOnNonArrayData(): void
@@ -209,8 +218,11 @@ final class SerializerTest
     {
         $message = OutboxMessage::create(type: 't', payload: "\xB1\x31");
 
-        Expect::exception(InvalidArgumentException::class);
-
-        $this->fixture->serialize($message);
+        try {
+            $this->fixture->serialize($message);
+            Assert::fail('Expected InvalidArgumentException');
+        } catch (\InvalidArgumentException $e) {
+            Assert::string($e->getMessage())->contains('Failed to serialize message: Malformed');
+        }
     }
 }

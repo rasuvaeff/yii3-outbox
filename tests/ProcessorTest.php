@@ -208,6 +208,7 @@ final class ProcessorTest
 
         Assert::same($result->published, 0);
         Assert::same($result->skipped, 1);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
     }
 
     public function respectsBatchSize(): void
