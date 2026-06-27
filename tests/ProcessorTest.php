@@ -5,26 +5,30 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
+use InvalidArgumentException;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\ProcessingResult;
 use Rasuvaeff\Yii3Outbox\Processor;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(Processor::class)]
-#[CoversClass(ProcessingResult::class)]
-final class ProcessorTest extends TestCase
+#[Test]
+#[Covers(Processor::class)]
+#[Covers(ProcessingResult::class)]
+final class ProcessorTest
 {
     private InMemoryStorage $storage;
     private Processor $processor;
     private StubPublisher $publisher;
     private StubClock $clock;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->storage = new InMemoryStorage();
         $this->publisher = new StubPublisher();
@@ -37,7 +41,6 @@ final class ProcessorTest extends TestCase
         );
     }
 
-    #[Test]
     public function publishesPendingMessage(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -49,14 +52,13 @@ final class ProcessorTest extends TestCase
 
         $result = $this->processor->process();
 
-        $this->assertSame(1, $result->published);
-        $this->assertSame(0, $result->failed);
-        $this->assertSame(0, $result->skipped);
-        $this->assertSame(OutboxStatus::Published, $this->storage->getById('msg-1')?->getStatus());
-        $this->assertSame('msg-1', $this->publisher->lastPublished?->getId());
+        Assert::same($result->published, 1);
+        Assert::same($result->failed, 0);
+        Assert::same($result->skipped, 0);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Published);
+        Assert::same($this->publisher->lastPublished?->getId(), 'msg-1');
     }
 
-    #[Test]
     public function publishesMultiplePendingMessages(): void
     {
         for ($i = 1; $i <= 3; $i++) {
@@ -70,11 +72,10 @@ final class ProcessorTest extends TestCase
 
         $result = $this->processor->process();
 
-        $this->assertSame(3, $result->published);
-        $this->assertSame(0, $result->failed);
+        Assert::same($result->published, 3);
+        Assert::same($result->failed, 0);
     }
 
-    #[Test]
     public function keepsAsPendingWhenPublishFailsButRetriesRemain(): void
     {
         $this->publisher->shouldFail = true;
@@ -88,12 +89,11 @@ final class ProcessorTest extends TestCase
 
         $result = $this->processor->process();
 
-        $this->assertSame(1, $result->failed);
-        $this->assertSame(OutboxStatus::Pending, $this->storage->getById('msg-1')?->getStatus());
-        $this->assertSame(1, $this->storage->getById('msg-1')?->getAttempts());
+        Assert::same($result->failed, 1);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($this->storage->getById('msg-1')?->getAttempts(), 1);
     }
 
-    #[Test]
     public function marksFailedWhenRetriesExhausted(): void
     {
         $processor = new Processor(
@@ -114,11 +114,10 @@ final class ProcessorTest extends TestCase
 
         $result = $processor->process();
 
-        $this->assertSame(1, $result->failed);
-        $this->assertSame(OutboxStatus::Failed, $this->storage->getById('msg-1')?->getStatus());
+        Assert::same($result->failed, 1);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Failed);
     }
 
-    #[Test]
     public function logsWarningOnPublishFailure(): void
     {
         $this->publisher->shouldFail = true;
@@ -142,13 +141,12 @@ final class ProcessorTest extends TestCase
 
         $processor->process();
 
-        $this->assertTrue($logger->warningCalled);
-        $this->assertSame('msg-1', $logger->warningContext['messageId']);
-        $this->assertSame(1, $logger->warningContext['attempts']);
-        $this->assertSame('Publish failed', $logger->warningContext['error']);
+        Assert::true($logger->warningCalled);
+        Assert::same($logger->warningContext['messageId'], 'msg-1');
+        Assert::same($logger->warningContext['attempts'], 1);
+        Assert::same($logger->warningContext['error'], 'Publish failed');
     }
 
-    #[Test]
     public function skipsAlreadyPublished(): void
     {
         $this->storage->save(
@@ -160,10 +158,9 @@ final class ProcessorTest extends TestCase
 
         $result = $this->processor->process();
 
-        $this->assertSame(0, $result->total());
+        Assert::same($result->total(), 0);
     }
 
-    #[Test]
     public function skipsWhenAttemptsExhausted(): void
     {
         $policy = new RetryPolicy(maxAttempts: 1, delaySeconds: 0);
@@ -184,11 +181,10 @@ final class ProcessorTest extends TestCase
 
         $result = $processor->process();
 
-        $this->assertSame(0, $result->published);
-        $this->assertSame(1, $result->skipped);
+        Assert::same($result->published, 0);
+        Assert::same($result->skipped, 1);
     }
 
-    #[Test]
     public function skipsWhenDelayNotElapsed(): void
     {
         $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
@@ -203,18 +199,18 @@ final class ProcessorTest extends TestCase
             ->withId('msg-1')
             ->withStatus(OutboxStatus::Pending)
             ->withAttempts(1)
-            ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30')) // 30s before clock
+            ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30'))
             ->build();
 
         $this->storage->save($message);
 
         $result = $processor->process();
 
-        $this->assertSame(0, $result->published);
-        $this->assertSame(1, $result->skipped);
+        Assert::same($result->published, 0);
+        Assert::same($result->skipped, 1);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
     }
 
-    #[Test]
     public function respectsBatchSize(): void
     {
         for ($i = 1; $i <= 5; $i++) {
@@ -236,10 +232,9 @@ final class ProcessorTest extends TestCase
 
         $result = $processor->process();
 
-        $this->assertSame(2, $result->published);
+        Assert::same($result->published, 2);
     }
 
-    #[Test]
     public function incrementsAttemptsOnPublish(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -254,11 +249,10 @@ final class ProcessorTest extends TestCase
 
         $updated = $this->storage->getById('msg-1');
 
-        $this->assertNotNull($updated);
-        $this->assertSame(1, $updated->getAttempts());
+        Assert::notNull($updated);
+        Assert::same($updated->getAttempts(), 1);
     }
 
-    #[Test]
     public function setsLastAttemptAtFromClock(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -272,18 +266,16 @@ final class ProcessorTest extends TestCase
 
         $updated = $this->storage->getById('msg-1');
 
-        $this->assertNotNull($updated);
-        $this->assertSame(
-            '2026-06-01 12:00:00',
+        Assert::notNull($updated);
+        Assert::same(
             $updated->getLastAttemptAt()?->format('Y-m-d H:i:s'),
+            '2026-06-01 12:00:00',
         );
     }
 
-    #[Test]
     public function throwsOnInvalidBatchSize(): void
     {
-        $this->expectException(\InvalidArgumentException::class);
-        $this->expectExceptionMessage('Batch size must be at least 1');
+        Expect::exception(InvalidArgumentException::class);
 
         new Processor(
             storage: $this->storage,
@@ -294,7 +286,6 @@ final class ProcessorTest extends TestCase
         );
     }
 
-    #[Test]
     public function acceptsBatchSizeOfOne(): void
     {
         for ($i = 1; $i <= 3; $i++) {
@@ -314,10 +305,9 @@ final class ProcessorTest extends TestCase
             batchSize: 1,
         );
 
-        $this->assertSame(1, $processor->process()->published);
+        Assert::same($processor->process()->published, 1);
     }
 
-    #[Test]
     public function continuesProcessingAfterSkippingNotReadyMessage(): void
     {
         $notReady = OutboxMessageBuilder::create()
@@ -336,17 +326,16 @@ final class ProcessorTest extends TestCase
 
         $result = $this->processor->process();
 
-        $this->assertSame(1, $result->published);
-        $this->assertSame(1, $result->skipped);
-        $this->assertSame(OutboxStatus::Published, $this->storage->getById('ready')?->getStatus());
-        $this->assertNotSame(OutboxStatus::Published, $this->storage->getById('not-ready')?->getStatus());
+        Assert::same($result->published, 1);
+        Assert::same($result->skipped, 1);
+        Assert::same($this->storage->getById('ready')?->getStatus(), OutboxStatus::Published);
+        Assert::notSame($this->storage->getById('not-ready')?->getStatus(), OutboxStatus::Published);
     }
 
-    #[Test]
     public function returnsZeroResultWhenNoPendingMessages(): void
     {
         $result = $this->processor->process();
 
-        $this->assertSame(0, $result->total());
+        Assert::same($result->total(), 0);
     }
 }

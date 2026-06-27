@@ -5,22 +5,24 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\Outbox;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(Outbox::class)]
-final class OutboxTest extends TestCase
+#[Test]
+#[Covers(Outbox::class)]
+final class OutboxTest
 {
     private InMemoryStorage $storage;
     private StubClock $clock;
     private Outbox $outbox;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->storage = new InMemoryStorage();
         $this->clock = new StubClock(new DateTimeImmutable('2026-06-01 10:00:00'));
@@ -30,7 +32,6 @@ final class OutboxTest extends TestCase
         );
     }
 
-    #[Test]
     public function recordSavesMessageAndReturnsIt(): void
     {
         $message = $this->outbox->record(
@@ -38,25 +39,23 @@ final class OutboxTest extends TestCase
             payload: '{"orderId": 1}',
         );
 
-        $this->assertSame('order.created', $message->getType());
-        $this->assertSame('{"orderId": 1}', $message->getPayload());
-        $this->assertSame(OutboxStatus::Pending, $message->getStatus());
-        $this->assertSame(0, $message->getAttempts());
-        $this->assertNull($message->getAggregateId());
+        Assert::same($message->getType(), 'order.created');
+        Assert::same($message->getPayload(), '{"orderId": 1}');
+        Assert::same($message->getStatus(), OutboxStatus::Pending);
+        Assert::same($message->getAttempts(), 0);
+        Assert::null($message->getAggregateId());
     }
 
-    #[Test]
     public function recordUsesClockForCreatedAt(): void
     {
         $message = $this->outbox->record(type: 'test', payload: '{}');
 
-        $this->assertSame(
-            '2026-06-01 10:00:00',
+        Assert::same(
             $message->getCreatedAt()->format('Y-m-d H:i:s'),
+            '2026-06-01 10:00:00',
         );
     }
 
-    #[Test]
     public function recordSetsAggregateId(): void
     {
         $message = $this->outbox->record(
@@ -65,26 +64,24 @@ final class OutboxTest extends TestCase
             aggregateId: 'order-42',
         );
 
-        $this->assertSame('order-42', $message->getAggregateId());
+        Assert::same($message->getAggregateId(), 'order-42');
     }
 
-    #[Test]
     public function recordPersistsMessageInStorage(): void
     {
         $message = $this->outbox->record(type: 'test', payload: '{}');
 
         $retrieved = $this->storage->getById($message->getId());
 
-        $this->assertNotNull($retrieved);
-        $this->assertSame($message->getId(), $retrieved->getId());
+        Assert::notNull($retrieved);
+        Assert::same($retrieved->getId(), $message->getId());
     }
 
-    #[Test]
     public function recordGeneratesUniqueIds(): void
     {
         $first = $this->outbox->record(type: 'test', payload: '{}');
         $second = $this->outbox->record(type: 'test', payload: '{}');
 
-        $this->assertNotSame($first->getId(), $second->getId());
+        Assert::notSame($first->getId(), $second->getId());
     }
 }

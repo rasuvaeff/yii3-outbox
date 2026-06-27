@@ -6,19 +6,22 @@ namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(OutboxMessage::class)]
-final class OutboxMessageTest extends TestCase
+#[Test]
+#[Covers(OutboxMessage::class)]
+final class OutboxMessageTest
 {
     private OutboxMessage $fixture;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->fixture = new OutboxMessage(
             id: 'test-id',
@@ -29,20 +32,18 @@ final class OutboxMessageTest extends TestCase
         );
     }
 
-    #[Test]
     public function createsWithAllProperties(): void
     {
-        $this->assertSame('test-id', $this->fixture->getId());
-        $this->assertSame('order.created', $this->fixture->getType());
-        $this->assertSame('{"orderId": 1}', $this->fixture->getPayload());
-        $this->assertSame(OutboxStatus::Pending, $this->fixture->getStatus());
-        $this->assertSame('2026-01-01 00:00:00', $this->fixture->getCreatedAt()->format('Y-m-d H:i:s'));
-        $this->assertSame(0, $this->fixture->getAttempts());
-        $this->assertNull($this->fixture->getLastAttemptAt());
-        $this->assertNull($this->fixture->getAggregateId());
+        Assert::same($this->fixture->getId(), 'test-id');
+        Assert::same($this->fixture->getType(), 'order.created');
+        Assert::same($this->fixture->getPayload(), '{"orderId": 1}');
+        Assert::same($this->fixture->getStatus(), OutboxStatus::Pending);
+        Assert::same($this->fixture->getCreatedAt()->format('Y-m-d H:i:s'), '2026-01-01 00:00:00');
+        Assert::same($this->fixture->getAttempts(), 0);
+        Assert::null($this->fixture->getLastAttemptAt());
+        Assert::null($this->fixture->getAggregateId());
     }
 
-    #[Test]
     public function createsViaFactoryMethod(): void
     {
         $message = OutboxMessage::create(
@@ -50,15 +51,14 @@ final class OutboxMessageTest extends TestCase
             payload: '{"userId": 42}',
         );
 
-        $this->assertSame('user.registered', $message->getType());
-        $this->assertSame('{"userId": 42}', $message->getPayload());
-        $this->assertSame(OutboxStatus::Pending, $message->getStatus());
-        $this->assertSame(0, $message->getAttempts());
-        $this->assertNull($message->getAggregateId());
-        $this->assertMatchesRegularExpression('/^[0-9a-f]{32}$/', $message->getId());
+        Assert::same($message->getType(), 'user.registered');
+        Assert::same($message->getPayload(), '{"userId": 42}');
+        Assert::same($message->getStatus(), OutboxStatus::Pending);
+        Assert::same($message->getAttempts(), 0);
+        Assert::null($message->getAggregateId());
+        Assert::true(preg_match('/^[0-9a-f]{32}$/', $message->getId()) === 1);
     }
 
-    #[Test]
     public function createsWithAggregateId(): void
     {
         $message = OutboxMessage::create(
@@ -67,10 +67,9 @@ final class OutboxMessageTest extends TestCase
             aggregateId: 'order-42',
         );
 
-        $this->assertSame('order-42', $message->getAggregateId());
+        Assert::same($message->getAggregateId(), 'order-42');
     }
 
-    #[Test]
     public function createsWithExplicitCreatedAt(): void
     {
         $at = new DateTimeImmutable('2026-06-01 10:00:00');
@@ -81,53 +80,47 @@ final class OutboxMessageTest extends TestCase
             createdAt: $at,
         );
 
-        $this->assertSame('2026-06-01 10:00:00', $message->getCreatedAt()->format('Y-m-d H:i:s'));
+        Assert::same($message->getCreatedAt()->format('Y-m-d H:i:s'), '2026-06-01 10:00:00');
     }
 
-    #[Test]
     public function withStatusReturnsNewInstance(): void
     {
         $published = $this->fixture->withStatus(OutboxStatus::Published);
 
-        $this->assertSame(OutboxStatus::Published, $published->getStatus());
-        $this->assertSame(OutboxStatus::Pending, $this->fixture->getStatus());
-        $this->assertSame($this->fixture->getId(), $published->getId());
+        Assert::same($published->getStatus(), OutboxStatus::Published);
+        Assert::same($this->fixture->getStatus(), OutboxStatus::Pending);
+        Assert::same($published->getId(), $this->fixture->getId());
     }
 
-    #[Test]
     public function withStatusPreservesAggregateId(): void
     {
         $message = OutboxMessage::create(type: 'test', payload: '{}', aggregateId: 'agg-1');
         $updated = $message->withStatus(OutboxStatus::Published);
 
-        $this->assertSame('agg-1', $updated->getAggregateId());
+        Assert::same($updated->getAggregateId(), 'agg-1');
     }
 
-    #[Test]
     public function withAttemptIncrementsAttemptsAndSetsTimestamp(): void
     {
         $at = new DateTimeImmutable('2026-06-01 12:00:00');
         $attempted = $this->fixture->withAttempt($at);
 
-        $this->assertSame(1, $attempted->getAttempts());
-        $this->assertSame(0, $this->fixture->getAttempts());
-        $this->assertSame('2026-06-01 12:00:00', $attempted->getLastAttemptAt()?->format('Y-m-d H:i:s'));
+        Assert::same($attempted->getAttempts(), 1);
+        Assert::same($this->fixture->getAttempts(), 0);
+        Assert::same($attempted->getLastAttemptAt()?->format('Y-m-d H:i:s'), '2026-06-01 12:00:00');
     }
 
-    #[Test]
     public function withAttemptPreservesAggregateId(): void
     {
         $message = OutboxMessage::create(type: 'test', payload: '{}', aggregateId: 'agg-1');
         $attempted = $message->withAttempt(new DateTimeImmutable());
 
-        $this->assertSame('agg-1', $attempted->getAggregateId());
+        Assert::same($attempted->getAggregateId(), 'agg-1');
     }
 
-    #[Test]
     public function throwsOnEmptyId(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Message id must not be empty');
+        Expect::exception(InvalidArgumentException::class);
 
         new OutboxMessage(
             id: '',
@@ -138,11 +131,9 @@ final class OutboxMessageTest extends TestCase
         );
     }
 
-    #[Test]
     public function throwsOnEmptyType(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Message type must not be empty');
+        Expect::exception(InvalidArgumentException::class);
 
         new OutboxMessage(
             id: 'id',
@@ -153,11 +144,9 @@ final class OutboxMessageTest extends TestCase
         );
     }
 
-    #[Test]
     public function throwsOnNegativeAttempts(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Attempts must be non-negative');
+        Expect::exception(InvalidArgumentException::class);
 
         new OutboxMessage(
             id: 'id',

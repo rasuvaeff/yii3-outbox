@@ -6,31 +6,32 @@ namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Expect;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(RetryPolicy::class)]
-final class RetryPolicyTest extends TestCase
+#[Test]
+#[Covers(RetryPolicy::class)]
+final class RetryPolicyTest
 {
     private RetryPolicy $fixture;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->fixture = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
     }
 
-    #[Test]
     public function returnsConfiguredValues(): void
     {
-        $this->assertSame(3, $this->fixture->getMaxAttempts());
-        $this->assertSame(60, $this->fixture->getDelaySeconds());
+        Assert::same($this->fixture->getMaxAttempts(), 3);
+        Assert::same($this->fixture->getDelaySeconds(), 60);
     }
 
-    #[Test]
     public function shouldRetryWhenAttemptsNotExhausted(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -38,10 +39,9 @@ final class RetryPolicyTest extends TestCase
             ->withAttempts(2)
             ->build();
 
-        $this->assertTrue($this->fixture->shouldRetry($message));
+        Assert::true($this->fixture->shouldRetry($message));
     }
 
-    #[Test]
     public function shouldNotRetryWhenAttemptsExhausted(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -49,10 +49,9 @@ final class RetryPolicyTest extends TestCase
             ->withAttempts(3)
             ->build();
 
-        $this->assertFalse($this->fixture->shouldRetry($message));
+        Assert::false($this->fixture->shouldRetry($message));
     }
 
-    #[Test]
     public function shouldNotRetryWhenAlreadyPublished(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -60,10 +59,9 @@ final class RetryPolicyTest extends TestCase
             ->withAttempts(0)
             ->build();
 
-        $this->assertFalse($this->fixture->shouldRetry($message));
+        Assert::false($this->fixture->shouldRetry($message));
     }
 
-    #[Test]
     public function isReadyForRetryWithNoLastAttempt(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -72,14 +70,13 @@ final class RetryPolicyTest extends TestCase
             ->withLastAttemptAt(null)
             ->build();
 
-        $this->assertTrue($this->fixture->isReadyForRetry($message, new DateTimeImmutable()));
+        Assert::true($this->fixture->isReadyForRetry($message, new DateTimeImmutable()));
     }
 
-    #[Test]
     public function isReadyForRetryAfterDelayPassed(): void
     {
         $lastAttempt = new DateTimeImmutable('2026-06-01 12:00:00');
-        $now = new DateTimeImmutable('2026-06-01 12:02:00'); // 2 minutes later
+        $now = new DateTimeImmutable('2026-06-01 12:02:00');
 
         $message = OutboxMessageBuilder::create()
             ->withStatus(OutboxStatus::Pending)
@@ -87,14 +84,13 @@ final class RetryPolicyTest extends TestCase
             ->withLastAttemptAt($lastAttempt)
             ->build();
 
-        $this->assertTrue($this->fixture->isReadyForRetry($message, $now));
+        Assert::true($this->fixture->isReadyForRetry($message, $now));
     }
 
-    #[Test]
     public function isNotReadyForRetryBeforeDelay(): void
     {
         $lastAttempt = new DateTimeImmutable('2026-06-01 12:00:00');
-        $now = new DateTimeImmutable('2026-06-01 12:00:30'); // only 30s later
+        $now = new DateTimeImmutable('2026-06-01 12:00:30');
 
         $message = OutboxMessageBuilder::create()
             ->withStatus(OutboxStatus::Pending)
@@ -102,14 +98,13 @@ final class RetryPolicyTest extends TestCase
             ->withLastAttemptAt($lastAttempt)
             ->build();
 
-        $this->assertFalse($this->fixture->isReadyForRetry($message, $now));
+        Assert::false($this->fixture->isReadyForRetry($message, $now));
     }
 
-    #[Test]
     public function isReadyForRetryAtExactDelayBoundary(): void
     {
         $lastAttempt = new DateTimeImmutable('2026-06-01 12:00:00');
-        $now = new DateTimeImmutable('2026-06-01 12:01:00'); // exactly 60s (the delay) later
+        $now = new DateTimeImmutable('2026-06-01 12:01:00');
 
         $message = OutboxMessageBuilder::create()
             ->withStatus(OutboxStatus::Pending)
@@ -117,63 +112,53 @@ final class RetryPolicyTest extends TestCase
             ->withLastAttemptAt($lastAttempt)
             ->build();
 
-        // now == lastAttempt + delay: ready under `>=`, not ready under `>`.
-        $this->assertTrue($this->fixture->isReadyForRetry($message, $now));
+        Assert::true($this->fixture->isReadyForRetry($message, $now));
     }
 
-    #[Test]
     public function isNotReadyForRetryWhenAttemptsExhausted(): void
     {
         $message = OutboxMessageBuilder::create()
             ->withStatus(OutboxStatus::Pending)
-            ->withAttempts(3) // == maxAttempts, so shouldRetry() is false
+            ->withAttempts(3)
             ->withLastAttemptAt(new DateTimeImmutable('2020-01-01 00:00:00'))
             ->build();
 
-        // The delay is long past, so only the exhausted-attempts guard keeps this false.
-        $this->assertFalse($this->fixture->isReadyForRetry($message, new DateTimeImmutable('2026-06-01 12:00:00')));
+        Assert::false($this->fixture->isReadyForRetry($message, new DateTimeImmutable('2026-06-01 12:00:00')));
     }
 
-    #[Test]
     public function throwsOnMaxAttemptsLessThanOne(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Max attempts must be at least 1');
+        Expect::exception(InvalidArgumentException::class);
 
         new RetryPolicy(maxAttempts: 0);
     }
 
-    #[Test]
     public function allowsMaxAttemptsOfOne(): void
     {
         $policy = new RetryPolicy(maxAttempts: 1);
 
-        $this->assertSame(1, $policy->getMaxAttempts());
+        Assert::same($policy->getMaxAttempts(), 1);
     }
 
-    #[Test]
     public function allowsZeroDelay(): void
     {
         $policy = new RetryPolicy(delaySeconds: 0);
 
-        $this->assertSame(0, $policy->getDelaySeconds());
+        Assert::same($policy->getDelaySeconds(), 0);
     }
 
-    #[Test]
     public function throwsOnNegativeDelay(): void
     {
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Delay seconds must be non-negative');
+        Expect::exception(InvalidArgumentException::class);
 
         new RetryPolicy(delaySeconds: -1);
     }
 
-    #[Test]
     public function defaultConstructorValues(): void
     {
         $policy = new RetryPolicy();
 
-        $this->assertSame(3, $policy->getMaxAttempts());
-        $this->assertSame(60, $policy->getDelaySeconds());
+        Assert::same($policy->getMaxAttempts(), 3);
+        Assert::same($policy->getDelaySeconds(), 60);
     }
 }

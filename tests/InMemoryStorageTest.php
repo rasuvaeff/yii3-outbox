@@ -4,25 +4,26 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Lifecycle\BeforeTest;
+use Testo\Test;
 
-#[CoversClass(InMemoryStorage::class)]
-final class InMemoryStorageTest extends TestCase
+#[Test]
+#[Covers(InMemoryStorage::class)]
+final class InMemoryStorageTest
 {
     private InMemoryStorage $fixture;
 
-    #[\Override]
-    protected function setUp(): void
+    #[BeforeTest]
+    public function setUp(): void
     {
         $this->fixture = new InMemoryStorage();
     }
 
-    #[Test]
     public function savesAndRetrievesMessage(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -34,18 +35,16 @@ final class InMemoryStorageTest extends TestCase
 
         $retrieved = $this->fixture->getById('msg-1');
 
-        $this->assertNotNull($retrieved);
-        $this->assertSame('msg-1', $retrieved->getId());
-        $this->assertSame('order-42', $retrieved->getAggregateId());
+        Assert::notNull($retrieved);
+        Assert::same($retrieved->getId(), 'msg-1');
+        Assert::same($retrieved->getAggregateId(), 'order-42');
     }
 
-    #[Test]
     public function returnsNullForUnknownId(): void
     {
-        $this->assertNull($this->fixture->getById('nonexistent'));
+        Assert::null($this->fixture->getById('nonexistent'));
     }
 
-    #[Test]
     public function findPendingReturnsOnlyPendingMessages(): void
     {
         $pending = OutboxMessageBuilder::create()
@@ -62,11 +61,10 @@ final class InMemoryStorageTest extends TestCase
 
         $result = $this->fixture->findPending();
 
-        $this->assertCount(1, $result);
-        $this->assertSame('pending-1', $result[0]->getId());
+        Assert::count($result, 1);
+        Assert::same($result[0]->getId(), 'pending-1');
     }
 
-    #[Test]
     public function findPendingRespectsLimit(): void
     {
         for ($i = 1; $i <= 5; $i++) {
@@ -80,10 +78,9 @@ final class InMemoryStorageTest extends TestCase
 
         $result = $this->fixture->findPending(limit: 3);
 
-        $this->assertCount(3, $result);
+        Assert::count($result, 3);
     }
 
-    #[Test]
     public function findPendingFiltersByType(): void
     {
         $this->fixture->save(
@@ -98,13 +95,15 @@ final class InMemoryStorageTest extends TestCase
 
         $result = $this->fixture->findPending(types: ['ab.exposure', 'ab.conversion']);
 
-        $this->assertSame(['exp-1', 'conv-1'], array_map(
-            static fn(OutboxMessage $message): string => $message->getId(),
-            $result,
-        ));
+        Assert::same(
+            array_map(
+                static fn(OutboxMessage $message): string => $message->getId(),
+                $result,
+            ),
+            ['exp-1', 'conv-1'],
+        );
     }
 
-    #[Test]
     public function findPendingWithEmptyTypesReturnsAllTypes(): void
     {
         $this->fixture->save(
@@ -114,10 +113,9 @@ final class InMemoryStorageTest extends TestCase
             OutboxMessageBuilder::create()->withId('other-1')->withType('order.created')->build(),
         );
 
-        $this->assertCount(2, $this->fixture->findPending());
+        Assert::count($this->fixture->findPending(), 2);
     }
 
-    #[Test]
     public function markPublishedUpdatesStatus(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -130,11 +128,10 @@ final class InMemoryStorageTest extends TestCase
 
         $retrieved = $this->fixture->getById('msg-1');
 
-        $this->assertNotNull($retrieved);
-        $this->assertSame(OutboxStatus::Published, $retrieved->getStatus());
+        Assert::notNull($retrieved);
+        Assert::same($retrieved->getStatus(), OutboxStatus::Published);
     }
 
-    #[Test]
     public function markFailedUpdatesStatus(): void
     {
         $message = OutboxMessageBuilder::create()
@@ -147,11 +144,10 @@ final class InMemoryStorageTest extends TestCase
 
         $retrieved = $this->fixture->getById('msg-1');
 
-        $this->assertNotNull($retrieved);
-        $this->assertSame(OutboxStatus::Failed, $retrieved->getStatus());
+        Assert::notNull($retrieved);
+        Assert::same($retrieved->getStatus(), OutboxStatus::Failed);
     }
 
-    #[Test]
     public function clearRemovesAllMessages(): void
     {
         $this->fixture->save(
@@ -160,21 +156,19 @@ final class InMemoryStorageTest extends TestCase
 
         $this->fixture->clear();
 
-        $this->assertSame(0, $this->fixture->count());
+        Assert::same($this->fixture->count(), 0);
     }
 
-    #[Test]
     public function countReturnsNumberOfMessages(): void
     {
-        $this->assertSame(0, $this->fixture->count());
+        Assert::same($this->fixture->count(), 0);
 
         $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->build());
         $this->fixture->save(OutboxMessageBuilder::create()->withId('b')->build());
 
-        $this->assertSame(2, $this->fixture->count());
+        Assert::same($this->fixture->count(), 2);
     }
 
-    #[Test]
     public function iteratesOverMessages(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->build());
@@ -186,60 +180,58 @@ final class InMemoryStorageTest extends TestCase
             $ids[] = $message->getId();
         }
 
-        $this->assertSame(['a', 'b'], $ids);
+        Assert::same($ids, ['a', 'b']);
     }
 
-    #[Test]
     public function findPendingSkipsNonPendingThatPrecedesAPendingMessage(): void
     {
-        // Non-pending first: the status filter must `continue`, not `break`, or the
-        // following pending message would be missed.
         $this->fixture->save(OutboxMessageBuilder::create()->withId('published-first')->withStatus(OutboxStatus::Published)->build());
         $this->fixture->save(OutboxMessageBuilder::create()->withId('pending-after')->withStatus(OutboxStatus::Pending)->build());
 
-        $this->assertSame(['pending-after'], array_map(
-            static fn(OutboxMessage $message): string => $message->getId(),
-            $this->fixture->findPending(),
-        ));
+        Assert::same(
+            array_map(
+                static fn(OutboxMessage $message): string => $message->getId(),
+                $this->fixture->findPending(),
+            ),
+            ['pending-after'],
+        );
     }
 
-    #[Test]
     public function findPendingSkipsNonMatchingTypeThatPrecedesAMatch(): void
     {
-        // Non-matching type first: the type filter must `continue`, not `break`.
         $this->fixture->save(OutboxMessageBuilder::create()->withId('other-first')->withType('order.created')->build());
         $this->fixture->save(OutboxMessageBuilder::create()->withId('exp-after')->withType('ab.exposure')->build());
 
-        $this->assertSame(['exp-after'], array_map(
-            static fn(OutboxMessage $message): string => $message->getId(),
-            $this->fixture->findPending(types: ['ab.exposure']),
-        ));
+        Assert::same(
+            array_map(
+                static fn(OutboxMessage $message): string => $message->getId(),
+                $this->fixture->findPending(types: ['ab.exposure']),
+            ),
+            ['exp-after'],
+        );
     }
 
-    #[Test]
     public function claimTransitionsPendingToProcessing(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->withStatus(OutboxStatus::Pending)->build());
 
         $claimed = $this->fixture->claim();
 
-        $this->assertCount(1, $claimed);
-        $this->assertSame('a', $claimed[0]->getId());
-        $this->assertSame(OutboxStatus::Processing, $claimed[0]->getStatus());
-        $this->assertSame(OutboxStatus::Processing, $this->fixture->getById('a')?->getStatus());
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'a');
+        Assert::same($claimed[0]->getStatus(), OutboxStatus::Processing);
+        Assert::same($this->fixture->getById('a')?->getStatus(), OutboxStatus::Processing);
     }
 
-    #[Test]
     public function claimDoesNotReturnNonPendingMessages(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('pub')->withStatus(OutboxStatus::Published)->build());
         $this->fixture->save(OutboxMessageBuilder::create()->withId('proc')->withStatus(OutboxStatus::Processing)->build());
         $this->fixture->save(OutboxMessageBuilder::create()->withId('fail')->withStatus(OutboxStatus::Failed)->build());
 
-        $this->assertSame([], $this->fixture->claim());
+        Assert::same($this->fixture->claim(), []);
     }
 
-    #[Test]
     public function claimRespectsLimit(): void
     {
         for ($i = 1; $i <= 5; $i++) {
@@ -248,11 +240,10 @@ final class InMemoryStorageTest extends TestCase
 
         $claimed = $this->fixture->claim(limit: 2);
 
-        $this->assertCount(2, $claimed);
-        $this->assertCount(3, $this->fixture->findPending());
+        Assert::count($claimed, 2);
+        Assert::count($this->fixture->findPending(), 3);
     }
 
-    #[Test]
     public function claimFiltersByType(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('exp')->withType('ab.exposure')->build());
@@ -261,15 +252,17 @@ final class InMemoryStorageTest extends TestCase
 
         $claimed = $this->fixture->claim(types: ['ab.exposure', 'ab.conversion']);
 
-        $this->assertSame(['exp', 'conv'], array_map(
-            static fn(OutboxMessage $message): string => $message->getId(),
-            $claimed,
-        ));
-        $this->assertCount(1, $this->fixture->findPending());
-        $this->assertSame('order', $this->fixture->findPending()[0]->getId());
+        Assert::same(
+            array_map(
+                static fn(OutboxMessage $message): string => $message->getId(),
+                $claimed,
+            ),
+            ['exp', 'conv'],
+        );
+        Assert::count($this->fixture->findPending(), 1);
+        Assert::same($this->fixture->findPending()[0]->getId(), 'order');
     }
 
-    #[Test]
     public function claimSecondCallDoesNotReturnAlreadyClaimedMessages(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->withStatus(OutboxStatus::Pending)->build());
@@ -277,6 +270,28 @@ final class InMemoryStorageTest extends TestCase
         $this->fixture->claim();
         $second = $this->fixture->claim();
 
-        $this->assertSame([], $second);
+        Assert::same($second, []);
+    }
+
+    public function claimSkipsNonPendingThatPrecedesAPendingMessage(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pub')->withStatus(OutboxStatus::Published)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pending')->withStatus(OutboxStatus::Pending)->build());
+
+        $claimed = $this->fixture->claim();
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'pending');
+    }
+
+    public function claimSkipsNonMatchingTypeThatPrecedesAMatch(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('other')->withType('order.created')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('exp')->withType('ab.exposure')->build());
+
+        $claimed = $this->fixture->claim(types: ['ab.exposure']);
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'exp');
     }
 }

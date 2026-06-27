@@ -4,16 +4,16 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
-use PHPUnit\Framework\Attributes\CoversClass;
-use PHPUnit\Framework\Attributes\Test;
-use PHPUnit\Framework\TestCase;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\PublishException;
+use Testo\Assert;
+use Testo\Codecov\Covers;
+use Testo\Test;
 
-#[CoversClass(PublishException::class)]
-final class PublishExceptionTest extends TestCase
+#[Test]
+#[Covers(PublishException::class)]
+final class PublishExceptionTest
 {
-    #[Test]
     public function holdsOutboxMessage(): void
     {
         $message = OutboxMessage::create(type: 'test', payload: '{}');
@@ -22,11 +22,10 @@ final class PublishExceptionTest extends TestCase
             outboxMessage: $message,
         );
 
-        $this->assertSame('Failed', $exception->getMessage());
-        $this->assertSame($message, $exception->getOutboxMessage());
+        Assert::same($exception->getMessage(), 'Failed');
+        Assert::same($exception->getOutboxMessage(), $message);
     }
 
-    #[Test]
     public function preservesPreviousException(): void
     {
         $previous = new \RuntimeException('connection refused');
@@ -37,10 +36,9 @@ final class PublishExceptionTest extends TestCase
             previous: $previous,
         );
 
-        $this->assertSame($previous, $exception->getPrevious());
+        Assert::same($exception->getPrevious(), $previous);
     }
 
-    #[Test]
     public function preservesErrorCode(): void
     {
         $message = OutboxMessage::create(type: 'test', payload: '{}');
@@ -50,10 +48,9 @@ final class PublishExceptionTest extends TestCase
             code: 42,
         );
 
-        $this->assertSame(42, $exception->getCode());
+        Assert::same($exception->getCode(), 42);
     }
 
-    #[Test]
     public function defaultsToErrorCodeZero(): void
     {
         $exception = new PublishException(
@@ -61,6 +58,6 @@ final class PublishExceptionTest extends TestCase
             outboxMessage: OutboxMessage::create(type: 'test', payload: '{}'),
         );
 
-        $this->assertSame(0, $exception->getCode());
+        Assert::same($exception->getCode(), 0);
     }
 }
