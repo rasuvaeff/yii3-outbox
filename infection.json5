@@ -10,6 +10,7 @@
     "phpUnit": {
         "configDir": "."
     },
+    "testFramework": "testo",
     // 93% is the honest ceiling. Every behavioural mutant is killed; the survivors
     // are low-value or equivalent:
     //   - default `int` params (findPending limit=1000, Processor batchSize=100) —
