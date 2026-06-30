@@ -3,6 +3,7 @@
 ## 1.0.2 — 2026-06-30
 
 - Add `/benchmarks` and `/Makefile` to `.gitattributes` export-ignore.
+- Pin `testo/bridge-infection` to `0.1.6`: 0.1.7/0.1.8 (2026-06-29) misclassify failing tests as passed under mutants, producing false escapes in mutation testing.
 
 All notable changes to this project will be documented in this file.
 
