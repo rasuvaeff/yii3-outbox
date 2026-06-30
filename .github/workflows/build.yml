@@ -116,7 +116,9 @@ jobs:
         run: composer test:coverage:ci
 
       - name: Mutation testing
-        run: composer mutation
+        run: |
+          rm -f build/coverage.xml
+          composer mutation
 
   compatibility:
     name: Backward compatibility
