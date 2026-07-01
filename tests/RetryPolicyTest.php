@@ -6,6 +6,9 @@ namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Gen;
+use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
 use Testo\Assert;
@@ -160,5 +163,48 @@ final class RetryPolicyTest
 
         Assert::same($policy->getMaxAttempts(), 3);
         Assert::same($policy->getDelaySeconds(), 60);
+    }
+
+    #[Property(runs: 300)]
+    public function exhaustedMessageIsNeverRetried(int $maxAttempts, int $extra): void
+    {
+        $policy = new RetryPolicy(maxAttempts: $maxAttempts);
+        $message = OutboxMessageBuilder::create()
+            ->withStatus(OutboxStatus::Pending)
+            ->withAttempts($maxAttempts + $extra)
+            ->build();
+
+        Assert::false($policy->shouldRetry($message));
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    private function exhaustedMessageIsNeverRetriedGenerators(): array
+    {
+        return [
+            'maxAttempts' => Gen::intBetween(1, 8),
+            'extra' => Gen::intBetween(0, 5),
+        ];
+    }
+
+    #[Property(runs: 300)]
+    public function pendingMessageBelowMaxIsRetried(int $attempts, int $slack): void
+    {
+        $maxAttempts = $attempts + $slack;
+        $policy = new RetryPolicy(maxAttempts: $maxAttempts);
+        $message = OutboxMessageBuilder::create()
+            ->withStatus(OutboxStatus::Pending)
+            ->withAttempts($attempts)
+            ->build();
+
+        Assert::true($policy->shouldRetry($message));
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    private function pendingMessageBelowMaxIsRetriedGenerators(): array
+    {
+        return [
+            'attempts' => Gen::intBetween(0, 8),
+            'slack' => Gen::intBetween(1, 5),
+        ];
     }
 }
