@@ -4,9 +4,19 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
+use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Gen;
+use Rasuvaeff\PropertyTesting\Property;
+use Rasuvaeff\PropertyTesting\StateMachine\CommandSequence;
+use Rasuvaeff\PropertyTesting\StateMachine\StateMachine;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
+use Rasuvaeff\Yii3Outbox\Tests\Support\ClaimCommand;
+use Rasuvaeff\Yii3Outbox\Tests\Support\FailCommand;
+use Rasuvaeff\Yii3Outbox\Tests\Support\OutboxHarness;
+use Rasuvaeff\Yii3Outbox\Tests\Support\PublishCommand;
+use Rasuvaeff\Yii3Outbox\Tests\Support\SaveCommand;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Lifecycle\BeforeTest;
@@ -293,5 +303,35 @@ final class InMemoryStorageTest
 
         Assert::count($claimed, 1);
         Assert::same($claimed[0]->getId(), 'exp');
+    }
+
+    /**
+     * Model-based test: under any interleaving of save, claim, markPublished and
+     * markFailed, every message's stored status tracks a simple model (the list
+     * of statuses in save order), and `findPending()` stays consistent with the
+     * per-message status — coverage the isolated single-operation tests above do
+     * not reach.
+     */
+    #[Property(runs: 300)]
+    public function interleavedLifecycleOperationsTrackTheModel(CommandSequence $sequence): void
+    {
+        $harness = new OutboxHarness();
+
+        StateMachine::check($sequence, static fn(): OutboxHarness => $harness);
+
+        // findPending() must agree with the per-message statuses read via getById().
+        $pending = count(array_filter($harness->statuses(), static fn(string $status): bool => $status === 'pending'));
+        Assert::same($harness->pendingCount(), $pending);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    private function interleavedLifecycleOperationsTrackTheModelGenerators(): array
+    {
+        return ['sequence' => Gen::commands([], [
+            Gen::constant(new SaveCommand()),
+            Gen::constant(new ClaimCommand()),
+            Gen::map(Gen::intBetween(0, 4), static fn(int $index): PublishCommand => new PublishCommand($index)),
+            Gen::map(Gen::intBetween(0, 4), static fn(int $index): FailCommand => new FailCommand($index)),
+        ])];
     }
 }
