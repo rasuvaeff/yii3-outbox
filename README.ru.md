@@ -1,4 +1,5 @@
-# Расуваефф/yii3-исходящие
+# rasuvaeff/yii3-outbox
+
 [![Stable Version](https://poser.pugx.org/rasuvaeff/yii3-outbox/v/stable)](https://packagist.org/packages/rasuvaeff/yii3-outbox)
 [![Total Downloads](https://poser.pugx.org/rasuvaeff/yii3-outbox/downloads)](https://packagist.org/packages/rasuvaeff/yii3-outbox)
 [![Build](https://github.com/rasuvaeff/yii3-outbox/actions/workflows/build.yml/badge.svg)](https://github.com/rasuvaeff/yii3-outbox/actions)
@@ -6,21 +7,29 @@
 [![Psalm Level](https://shepherd.dev/github/rasuvaeff/yii3-outbox/level.svg)](https://shepherd.dev/github/rasuvaeff/yii3-outbox)
 [![PHP](https://img.shields.io/packagist/dependency-v/rasuvaeff/yii3-outbox/php)](https://packagist.org/packages/rasuvaeff/yii3-outbox)
 [![License](https://poser.pugx.org/rasuvaeff/yii3-outbox/license)](https://packagist.org/packages/rasuvaeff/yii3-outbox)
-Реализация шаблона исходящих транзакций для Yii3. Предоставляет ядро ​​
- без сохранения состояния для надежной публикации сообщений с настраиваемыми политиками повтора.
+[English version](README.md)
 
- > Используете помощника по программированию с искусственным интеллектом? [llms.txt](llms.txt) содержит компактную ссылку на API, которую вы можете использовать. @@ЛИНИЯ@@
+Реализация паттерна transactional outbox для Yii3. Предоставляет stateless-ядро
+для надёжной публикации сообщений с настраиваемыми политиками повторов.
+
+> Используете AI-ассистента? В [llms.txt](llms.txt) — компактный API-справочник.
+
 ## Требования
+
 - PHP 8.3+
- - `psr/lock` ^1.0
- - `psr/log` ^3.0
+- `psr/clock` ^1.0
+- `psr/log` ^3.0
 
 ## Установка
+
 ```bash
 composer require rasuvaeff/yii3-outbox
 ```
+
 ## Использование
+
 ### Запись сообщения
+
 ```php
 use DateTimeImmutable;
 use Psr\Clock\ClockInterface;
@@ -39,7 +48,9 @@ $message = $outbox->record(
     aggregateId: 'order-42',
 );
 ```
+
 ### Реализация хранилища
+
 ```php
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -74,7 +85,9 @@ final class DbStorage implements StorageInterface
     }
 }
 ```
-### Реализация издателя
+
+### Реализация паблишера
+
 ```php
 use Rasuvaeff\Yii3Outbox\PublisherInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -96,7 +109,9 @@ final class RabbitPublisher implements PublisherInterface
     }
 }
 ```
-### Обработка исходящих сообщений
+
+### Обработка outbox
+
 ```php
 use Rasuvaeff\Yii3Outbox\Processor;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
@@ -114,10 +129,12 @@ $result = $processor->process();
 // $result->failed   — publish exceptions (message kept Pending if retries remain)
 // $result->skipped  — not yet ready for retry
 ```
-### Повторить попытку
+
+### Поведение повторов
+
 При сбое публикации:
- — если количество попыток < `maxAttempts` → сообщение остаётся `Pending`, будет повторено через `delaySeconds`
- - Если попыток >= `maxAttempts` → сообщение помечено как `Failed` (терминал)
+- Если attempts < `maxAttempts` → сообщение остаётся `Pending`, будет повторено через `delaySeconds`
+- Если attempts >= `maxAttempts` → сообщение помечается `Failed` (терминальный статус)
 
 ```php
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
@@ -125,7 +142,9 @@ $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
 $policy->shouldRetry($message);          // bool — attempts remaining?
 $policy->isReadyForRetry($message, $now); // bool — delay elapsed?
 ```
-### Использование InMemoryStorage для тестов
+
+### Использование InMemoryStorage в тестах
+
 ```php
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 
@@ -136,61 +155,82 @@ $pending = $storage->findPending();
 $storage->count();
 $storage->clear();
 ```
+
 ## Справочник по API
-### Исходящие
+
+### Outbox
+
 | Метод | Описание |
- |---|---|
- | `__construct(хранилище, часы)` | Основная точка входа |
- | `запись (тип, полезная нагрузка, агрегатный идентификатор?)` | Создать и сохранить сообщение, возвращает OutboxMessage | @@ЛИНИЯ@@
-### ИсходящиеСообщение
+|---|---|
+| `__construct(storage, clock)` | Основная точка входа |
+| `record(type, payload, aggregateId?)` | Создаёт и сохраняет сообщение, возвращает `OutboxMessage` |
+
+### OutboxMessage
+
 | Метод | Описание |
- |---|---|
- | `create(type, payload,gregId?, CreateAt?)` | Фабрика с автоматически сгенерированным идентификатором |
- | `getId()` | Идентификатор сообщения (32-значный шестнадцатеричный код) |
- | `getType()` | Тип сообщения |
- | `getPayload()` | Необработанная строка полезной нагрузки |
- | `getStatus()` | Перечисление `OutboxStatus` |
- | `getCreatedAt()` | `DateTimeImmutable` |
- | `getAttempts()` | Количество попыток публикации |
- | `getLastAttemptAt()` | `?DateTimeImmutable` |
- | `getAggregateId()` | `?строка` |
- | `withStatus(статус)` | Возвращает новый экземпляр со статусом |
- | `сПопытка(в)` | Возвращает новый экземпляр с увеличенными попытками и отметкой времени | @@ЛИНИЯ@@
-### Статус исходящих сообщений
-| Дело | Значение |
- |---|---|
- | `В ожидании` | `'ожидает'` |
- | `Опубликовано` | `'опубликовано'` |
- | `Не удалось` | `'не удалось'` | @@ЛИНИЯ@@
-### Политика повтора
+|---|---|
+| `create(type, payload, aggregateId?, createdAt?)` | Фабрика с авто-генерируемым ID |
+| `getId()` | ID сообщения (32-символьный hex) |
+| `getType()` | Тип сообщения |
+| `getPayload()` | Сырая строка payload |
+| `getStatus()` | Enum `OutboxStatus` |
+| `getCreatedAt()` | `DateTimeImmutable` |
+| `getAttempts()` | Количество попыток публикации |
+| `getLastAttemptAt()` | `?DateTimeImmutable` |
+| `getAggregateId()` | `?string` |
+| `withStatus(status)` | Возвращает новый экземпляр со статусом |
+| `withAttempt(at)` | Возвращает новый экземпляр с инкрементированными attempts и timestamp |
+
+### OutboxStatus
+
+| Case | Значение |
+|---|---|
+| `Pending` | `'pending'` |
+| `Published` | `'published'` |
+| `Failed` | `'failed'` |
+
+### RetryPolicy
+
 | Метод | Описание |
- |---|---|
- | `__construct(maxAttempts,laySeconds)` | По умолчанию: 3 попытки, задержка 60 с |
- | `следуетПовторить(сообщение)` | Проверяет количество попыток |
- | `isReadyForRetry(сообщение, сейчас)` | Проверяет попытки + истекшая задержка | @@ЛИНИЯ@@
-### Процессор
+|---|---|
+| `__construct(maxAttempts, delaySeconds)` | По умолчанию: 3 попытки, задержка 60 с |
+| `shouldRetry(message)` | Проверяет количество попыток |
+| `isReadyForRetry(message, now)` | Проверяет попытки + истечение задержки |
+
+### Processor
+
 | Метод | Описание |
- |---|---|
- | `__construct(хранилище, издатель, retryPolicy, часы, пакетный размер, регистратор)` | Пакет по умолчанию: 100 |
- | `процесс()` | Возвращает `ProcessingResult` | @@ЛИНИЯ@@
-### Результат обработки
+|---|---|
+| `__construct(storage, publisher, retryPolicy, clock, batchSize, logger)` | Batch по умолчанию: 100 |
+| `process()` | Возвращает `ProcessingResult` |
+
+### ProcessingResult
+
 | Свойство/Метод | Описание |
- |---|---|
- | `$опубликовано` | Количество успешно опубликованных сообщений |
- | `$не удалось` | Число исключений публикации в этом запуске |
- | `$пропущено` | Количество сообщений, не готовых к повтору |
- | `всего()` | Сумма всех счетчиков | @@ЛИНИЯ@@
-### Сериализатор
+|---|---|
+| `$published` | Количество успешно опубликованных сообщений |
+| `$failed` | Количество исключений публикации в этом запуске |
+| `$skipped` | Количество сообщений, не готовых к повтору |
+| `total()` | Сумма всех счётчиков |
+
+### Serializer
+
 | Метод | Описание |
- |---|---|
- | `сериализовать(сообщение)` | Сообщение в формате JSON |
- | `десериализовать(данные)` | JSON в сообщение | @@ЛИНИЯ@@
+|---|---|
+| `serialize(message)` | Сообщение в JSON |
+| `deserialize(data)` | JSON в сообщение |
+
 ## Безопасность
+
 - Реализации хранилища должны использовать параметризованные запросы для всех пользовательских значений.
- — полезные данные сообщения сохраняются как есть; при необходимости проверьте перед сохранением. @@ЛИНИЯ@@
+- Payload сообщения сохраняется как есть; при необходимости валидируйте перед сохранением.
+
 ## Примеры
-См. [examples/](examples/) для полных примеров использования. @@ЛИНИЯ@@
+
+Полные примеры использования — в [examples/](examples/).
+
 ## Разработка
+
 ```bash
 make install
 make build
@@ -200,7 +240,10 @@ make test-coverage
 make mutation
 make release-check
 ```
-`make test-coverage` и `makemutation` загружают `pcov` внутри контейнера
- `composer:2`, поскольку базовый образ не имеет драйвера покрытия. @@ЛИНИЯ@@
+
+`make test-coverage` и `make mutation` поднимают `pcov` внутри контейнера
+`composer:2`, потому что в базовом образе нет драйвера покрытия.
+
 ## Лицензия
-BSD-3-пункт. См. [LICENSE.md](LICENSE.md).
+
+BSD-3-Clause. См. [LICENSE.md](LICENSE.md).
