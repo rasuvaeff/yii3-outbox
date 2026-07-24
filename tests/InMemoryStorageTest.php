@@ -325,7 +325,7 @@ final class InMemoryStorageTest
     }
 
     /** @return array<string, ArbitraryInterface> */
-    private function interleavedLifecycleOperationsTrackTheModelGenerators(): array
+    public static function interleavedLifecycleOperationsTrackTheModelGenerators(): array
     {
         return ['sequence' => Gen::commands([], [
             Gen::constant(new SaveCommand()),

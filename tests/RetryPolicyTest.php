@@ -178,7 +178,7 @@ final class RetryPolicyTest
     }
 
     /** @return array<string, ArbitraryInterface> */
-    private function exhaustedMessageIsNeverRetriedGenerators(): array
+    public static function exhaustedMessageIsNeverRetriedGenerators(): array
     {
         return [
             'maxAttempts' => Gen::intBetween(1, 8),
@@ -200,7 +200,7 @@ final class RetryPolicyTest
     }
 
     /** @return array<string, ArbitraryInterface> */
-    private function pendingMessageBelowMaxIsRetriedGenerators(): array
+    public static function pendingMessageBelowMaxIsRetriedGenerators(): array
     {
         return [
             'attempts' => Gen::intBetween(0, 8),
