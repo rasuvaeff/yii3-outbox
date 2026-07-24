@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0 — 2026-07-25
+
+- Ship an AI agent skill (`resources/skills/rasuvaeff-yii3-outbox/SKILL.md` +
+  `extra.skills` in composer.json): projects using the `llm/skills` Composer
+  plugin get the skill synced into `.agents/skills/` automatically on install.
+- Document `StorageInterface::claim()` and `OutboxStatus::Processing` in `llms.txt`.
+- Bump `rasuvaeff/property-testing` to `^2.6`.
+- Make property-test generator methods `public static` (private ones are removed by rector's `RemoveUnusedPrivateMethodRector` — they are only called via reflection).
+
 ## 1.0.2 — 2026-06-30
 
 - Add `/benchmarks` and `/Makefile` to `.gitattributes` export-ignore.

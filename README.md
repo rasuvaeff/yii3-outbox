@@ -13,6 +13,7 @@ Transactional outbox pattern implementation for Yii3. Provides a stateless core
 for reliably publishing messages with configurable retry policies.
 
 > Using an AI coding assistant? [llms.txt](llms.txt) has a compact API reference you can use.
+> Projects using the [llm/skills](https://github.com/roxblnfk/skills) Composer plugin also get this package's agent skill synced into `.agents/skills/` automatically on install.
 
 ## Requirements
 

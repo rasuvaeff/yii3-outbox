@@ -11,7 +11,7 @@ composer require rasuvaeff/yii3-outbox
 - Core has no DB dependency. Implement `StorageInterface` for persistence.
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
-- `Processor::process()` increments attempts before calling publisher.
+- `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
 - Failed publish keeps message as `Pending` if retries remain; marks `Failed` only when exhausted.
 - `Processor` and `Outbox` require a `Psr\Clock\ClockInterface` implementation.
 
@@ -62,9 +62,10 @@ $attempted = $message->withAttempt($clock->now()); // increments attempts, sets 
 ```php
 enum OutboxStatus: string
 {
-    case Pending   = 'pending';
-    case Published = 'published';
-    case Failed    = 'failed';
+    case Pending    = 'pending';
+    case Processing = 'processing';
+    case Published  = 'published';
+    case Failed     = 'failed';
 }
 ```
 
@@ -77,6 +78,10 @@ interface StorageInterface
     // findPending must return Pending messages, including those with attempts > 0
     // $types filters by message type (empty = all); lets several consumers share one outbox
     public function findPending(array $types = [], int $limit = 1000): array;
+    // claim atomically transitions up to $limit Pending messages to Processing and returns them.
+    // Use it (not findPending) for concurrent workers. Every claimed message must end in
+    // markPublished(), markFailed(), or save($msg->withStatus(Pending)) — never stay Processing.
+    public function claim(array $types = [], int $limit = 1000): array;
     public function markPublished(OutboxMessage $message): void;
     public function markFailed(OutboxMessage $message): void;
     public function getById(string $id): ?OutboxMessage;
