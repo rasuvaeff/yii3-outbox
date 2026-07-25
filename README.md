@@ -50,6 +50,59 @@ $message = $outbox->record(
 );
 ```
 
+### Message ids
+
+The message id is the primary key of the outbox table and, when messages are
+exported to ClickHouse, the deduplication key of the `ReplacingMergeTree`.
+Two ways to control it:
+
+**Pass the domain event's id** — the right choice whenever the message mirrors
+an event that already has an identifier. Republishing the same event then
+cannot mint a second id, so the consumer has something stable to deduplicate
+on:
+
+```php
+$outbox->record(
+    type: 'order.created',
+    payload: $json,
+    aggregateId: 'order-42',
+    id: $domainEvent->getId(),
+);
+```
+
+**Bind a generator** for messages that have no domain id. The default
+`RandomHexIdGenerator` keeps the historical format (32 random hex characters);
+a time-ordered id makes inserts append instead of scattering across InnoDB
+pages and gives batches a stable order:
+
+```php
+use Rasuvaeff\Yii3Outbox\MessageIdGeneratorInterface;
+
+// symfony/uid
+final readonly class Uuid7IdGenerator implements MessageIdGeneratorInterface
+{
+    public function generate(): string
+    {
+        return \Symfony\Component\Uid\Uuid::v7()->toRfc4122();
+    }
+}
+
+// ramsey/uuid — equally monotonic within the same millisecond
+final readonly class RamseyUuid7IdGenerator implements MessageIdGeneratorInterface
+{
+    public function generate(): string
+    {
+        return \Ramsey\Uuid\Uuid::uuid7()->toString();
+    }
+}
+
+$outbox = new Outbox(storage: $storage, clock: $clock, idGenerator: new Uuid7IdGenerator());
+```
+
+The package ships no UUID implementation and depends on no UUID library —
+`id` is `VARCHAR(255)` in `rasuvaeff/yii3-outbox-db`, so any format fits and
+the choice stays yours.
+
 ### Implementing storage
 
 ```php
@@ -163,14 +216,14 @@ $storage->clear();
 
 | Method | Description |
 |---|---|
-| `__construct(storage, clock)` | Main entry point |
-| `record(type, payload, aggregateId?)` | Create and persist message, returns `OutboxMessage` |
+| `__construct(storage, clock, idGenerator?)` | Main entry point; default generator = `RandomHexIdGenerator` |
+| `record(type, payload, aggregateId?, id?)` | Create and persist message, returns `OutboxMessage`. `id` = the domain event's id; omitted → generator |
 
 ### OutboxMessage
 
 | Method | Description |
 |---|---|
-| `create(type, payload, aggregateId?, createdAt?)` | Factory with auto-generated ID |
+| `create(type, payload, aggregateId?, createdAt?, id?)` | Factory; `id` omitted → 32-char hex |
 | `getId()` | Message ID (32-char hex) |
 | `getType()` | Message type |
 | `getPayload()` | Raw payload string |
@@ -181,6 +234,13 @@ $storage->clear();
 | `getAggregateId()` | `?string` |
 | `withStatus(status)` | Returns new instance with status |
 | `withAttempt(at)` | Returns new instance with incremented attempts and timestamp |
+
+### MessageIdGeneratorInterface
+
+| Implementation | Produces |
+|---|---|
+| `RandomHexIdGenerator` (default) | 32 hex characters, 128 random bits |
+| your own | anything non-empty; `id` is `VARCHAR(255)` in the DB adapter |
 
 ### OutboxStatus
 

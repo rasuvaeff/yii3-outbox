@@ -32,6 +32,37 @@ final class OutboxTest
         );
     }
 
+    public function defaultIdFormatIsUnchanged(): void
+    {
+        $message = $this->outbox->record(type: 'order.created', payload: '{}');
+
+        Assert::same(preg_match('/^[0-9a-f]{32}$/', $message->getId()), 1);
+    }
+
+    public function idComesFromTheConfiguredGenerator(): void
+    {
+        $outbox = new Outbox(
+            storage: $this->storage,
+            clock: $this->clock,
+            idGenerator: new FixedIdGenerator('generated-id'),
+        );
+
+        Assert::same($outbox->record(type: 'order.created', payload: '{}')->getId(), 'generated-id');
+    }
+
+    public function domainEventIdIsUsedAsIsAndSkipsTheGenerator(): void
+    {
+        // republishing the same domain event must not mint a second id, or the
+        // receiver has nothing stable to deduplicate on
+        $generator = new FixedIdGenerator('generated-id');
+        $outbox = new Outbox(storage: $this->storage, clock: $this->clock, idGenerator: $generator);
+
+        $message = $outbox->record(type: 'order.created', payload: '{}', id: 'order-created-42');
+
+        Assert::same($message->getId(), 'order-created-42');
+        Assert::same($generator->calls, 0);
+    }
+
     public function recordSavesMessageAndReturnsIt(): void
     {
         $message = $this->outbox->record(

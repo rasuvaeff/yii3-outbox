@@ -83,6 +83,20 @@ final class OutboxMessageTest
         Assert::same($message->getCreatedAt()->format('Y-m-d H:i:s'), '2026-06-01 10:00:00');
     }
 
+    public function factoryAcceptsAnExplicitId(): void
+    {
+        $message = OutboxMessage::create(type: 'order.created', payload: '{}', id: 'domain-event-1');
+
+        Assert::same($message->getId(), 'domain-event-1');
+    }
+
+    public function factoryGeneratesTheHistoricalFormatWithoutAnId(): void
+    {
+        $message = OutboxMessage::create(type: 'order.created', payload: '{}');
+
+        Assert::same(preg_match('/^[0-9a-f]{32}$/', $message->getId()), 1);
+    }
+
     public function withStatusReturnsNewInstance(): void
     {
         $published = $this->fixture->withStatus(OutboxStatus::Published);

@@ -40,7 +40,17 @@ Namespace `Rasuvaeff\Yii3Outbox\`.
    attempts are exhausted. Storage's pending lookup must return messages with
    any attempt count — `RetryPolicy` decides readiness, not storage.
 
-5. **Core never binds storage.** The core has no DB dependency; a backend
+5. **Pass the domain event's id when the message mirrors one.**
+   `record(..., id: $domainEvent->getId())` — otherwise republishing the same
+   domain event mints a new message id and the consumer (or the ClickHouse
+   `ReplacingMergeTree` it lands in) has nothing stable to deduplicate on.
+   Without `id:` the `MessageIdGeneratorInterface` runs; the default
+   `RandomHexIdGenerator` keeps the historical 32-char hex format. The package
+   ships no UUID implementation on purpose — `id` is `VARCHAR(255)` in the DB
+   adapter, so bind a 5-line generator over symfony/uid or ramsey/uuid if you
+   want time-ordered ids.
+
+6. **Core never binds storage.** The core has no DB dependency; a backend
    package (`rasuvaeff/yii3-outbox-db`) or the application binds
    `StorageInterface`. `InMemoryStorage` is test-only. `OutboxMessage` is
    immutable (`withStatus()` / `withAttempt()` return new instances), and
