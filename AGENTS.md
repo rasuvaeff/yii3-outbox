@@ -9,7 +9,9 @@ It provides a stateless core for storing messages in an outbox and publishing
 them reliably with retry policies. Namespace: `Rasuvaeff\Yii3Outbox`.
 
 Public API:
-- `Outbox` — facade: `record(type, payload, aggregateId?)` → `OutboxMessage`
+- `Outbox` — facade: `record(type, payload, aggregateId?, id?)` → `OutboxMessage`
+- `MessageIdGeneratorInterface` — produces the message id when none is passed
+- `RandomHexIdGenerator` — default: 32 random hex characters
 - `OutboxMessage` — immutable message value object with `aggregateId` support
 - `OutboxStatus` — enum: `Pending`, `Published`, `Failed`
 - `SerializerInterface` / `Serializer` — JSON serialization
@@ -76,6 +78,16 @@ make release-check
   outbox without competing for each other's messages.
 - `InMemoryStorage` does not persist between requests — test use only.
 - `Outbox` and `Processor` require `Psr\Clock\ClockInterface` injection.
+- **Message id: domain id first, generator second.** `record(id: ...)` skips the
+  generator entirely — that is the path that keeps republished domain events
+  deduplicable downstream. `RandomHexIdGenerator` must stay the default:
+  changing it silently rewrites every installation's id scheme.
+- **No UUID library in `require` — deliberately.** `id` is `VARCHAR(255)` in
+  `yii3-outbox-db`, so any format fits and the choice belongs to the
+  application; the README shows the five-line generator for symfony/uid and
+  ramsey/uuid. Unlike `yii3-audit-log` (whose column is `VARCHAR(32)`, where
+  the hex-32 UUIDv7 trick is subtle enough to ship as a tested class), this
+  package has no reason to pick a library for the user.
 - Code: `declare(strict_types=1)`, `final readonly class`, `#[\Override]`,
   explicit types.
 

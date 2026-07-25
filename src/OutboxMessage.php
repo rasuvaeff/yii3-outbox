@@ -35,14 +35,19 @@ final readonly class OutboxMessage
         }
     }
 
+    /**
+     * @param ?string $id the domain event's identifier when the message mirrors
+     *                    one; null generates the historical random-hex format
+     */
     public static function create(
         string $type,
         string $payload,
         ?string $aggregateId = null,
         ?DateTimeImmutable $createdAt = null,
+        ?string $id = null,
     ): self {
         return new self(
-            id: bin2hex(random_bytes(16)),
+            id: $id ?? (new RandomHexIdGenerator())->generate(),
             type: $type,
             payload: $payload,
             status: OutboxStatus::Pending,

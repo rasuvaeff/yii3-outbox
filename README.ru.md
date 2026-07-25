@@ -50,6 +50,60 @@ $message = $outbox->record(
 );
 ```
 
+### Идентификаторы сообщений
+
+Id сообщения — это первичный ключ таблицы outbox, а при экспорте сообщений в
+ClickHouse ещё и ключ дедупликации в `ReplacingMergeTree`. Управлять им можно
+двумя способами.
+
+**Передать id доменного события** — правильный выбор всегда, когда сообщение
+отражает событие, у которого идентификатор уже есть. Повторная публикация того
+же события тогда не порождает второй id, и потребителю есть по чему
+дедуплицировать:
+
+```php
+$outbox->record(
+    type: 'order.created',
+    payload: $json,
+    aggregateId: 'order-42',
+    id: $domainEvent->getId(),
+);
+```
+
+**Забиндить генератор** — для сообщений, у которых доменного id нет.
+`RandomHexIdGenerator` по умолчанию сохраняет исторический формат (32
+случайных hex-символа); упорядоченный по времени id заставляет вставки идти в
+конец, а не разбрасываться по страницам InnoDB, и даёт стабильный порядок
+выборки пачек:
+
+```php
+use Rasuvaeff\Yii3Outbox\MessageIdGeneratorInterface;
+
+// symfony/uid
+final readonly class Uuid7IdGenerator implements MessageIdGeneratorInterface
+{
+    public function generate(): string
+    {
+        return \Symfony\Component\Uid\Uuid::v7()->toRfc4122();
+    }
+}
+
+// ramsey/uuid — так же монотонен внутри одной миллисекунды
+final readonly class RamseyUuid7IdGenerator implements MessageIdGeneratorInterface
+{
+    public function generate(): string
+    {
+        return \Ramsey\Uuid\Uuid::uuid7()->toString();
+    }
+}
+
+$outbox = new Outbox(storage: $storage, clock: $clock, idGenerator: new Uuid7IdGenerator());
+```
+
+Пакет не поставляет реализацию UUID и не зависит ни от одной UUID-библиотеки:
+`id` в `rasuvaeff/yii3-outbox-db` — `VARCHAR(255)`, поэтому влезает любой
+формат, а выбор остаётся за вами.
+
 ### Реализация хранилища
 
 ```php
@@ -163,14 +217,14 @@ $storage->clear();
 
 | Метод | Описание |
 |---|---|
-| `__construct(storage, clock)` | Основная точка входа |
-| `record(type, payload, aggregateId?)` | Создаёт и сохраняет сообщение, возвращает `OutboxMessage` |
+| `__construct(storage, clock, idGenerator?)` | Основная точка входа |
+| `record(type, payload, aggregateId?, id?)` | Создаёт и сохраняет сообщение, возвращает `OutboxMessage` |
 
 ### OutboxMessage
 
 | Метод | Описание |
 |---|---|
-| `create(type, payload, aggregateId?, createdAt?)` | Фабрика с авто-генерируемым ID |
+| `create(type, payload, aggregateId?, createdAt?, id?)` | Фабрика с авто-генерируемым ID |
 | `getId()` | ID сообщения (32-символьный hex) |
 | `getType()` | Тип сообщения |
 | `getPayload()` | Сырая строка payload |
@@ -181,6 +235,13 @@ $storage->clear();
 | `getAggregateId()` | `?string` |
 | `withStatus(status)` | Возвращает новый экземпляр со статусом |
 | `withAttempt(at)` | Возвращает новый экземпляр с инкрементированными attempts и timestamp |
+
+### MessageIdGeneratorInterface
+
+| Реализация | Что выдаёт |
+|---|---|
+| `RandomHexIdGenerator` (по умолчанию) | 32 hex-символа, 128 случайных бит |
+| собственная | что угодно непустое; `id` в DB-адаптере — `VARCHAR(255)` |
 
 ### OutboxStatus
 

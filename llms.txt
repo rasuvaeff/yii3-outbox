@@ -14,6 +14,11 @@ composer require rasuvaeff/yii3-outbox
 - `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
 - Failed publish keeps message as `Pending` if retries remain; marks `Failed` only when exhausted.
 - `Processor` and `Outbox` require a `Psr\Clock\ClockInterface` implementation.
+- Message id: pass `id:` (the domain event's id) to keep republishes deduplicable,
+  otherwise `MessageIdGeneratorInterface` produces one. Default
+  `RandomHexIdGenerator` = 32 random hex chars. The package ships no UUID
+  implementation and depends on no UUID library; `id` is VARCHAR(255) in the DB
+  adapter, so any format fits.
 
 ## API
 
@@ -22,13 +27,25 @@ composer require rasuvaeff/yii3-outbox
 ```php
 use Rasuvaeff\Yii3Outbox\Outbox;
 
-$outbox = new Outbox(storage: $storage, clock: $clock);
+$outbox = new Outbox(
+    storage: $storage,
+    clock: $clock,
+    idGenerator: $generator, // optional, default RandomHexIdGenerator (32-char hex)
+);
 
+// id: pass the domain event's id when the message mirrors one; omitted => generator
 $message = $outbox->record(
     type: 'order.created',
     payload: json_encode(['orderId' => 42]),
     aggregateId: 'order-42', // optional
+    id: $domainEvent->getId(), // optional; generator is not consulted when given
 );
+
+interface MessageIdGeneratorInterface
+{
+    /** @return non-empty-string */
+    public function generate(): string;
+}
 ```
 
 ### OutboxMessage
@@ -42,6 +59,7 @@ $message = OutboxMessage::create(
     payload: '{"orderId": 42}',
     aggregateId: 'order-42', // optional
     createdAt: $clock->now(), // optional, defaults to new DateTimeImmutable()
+    id: 'domain-event-1', // optional, defaults to 32-char hex
 );
 
 $message->getId();            // string, 32-char hex
