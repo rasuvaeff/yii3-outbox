@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — 2026-07-26
 
 - Document the transactional invariant the pattern rests on: `Outbox::record()`
   must be called inside the same DB transaction as the business write, and the
