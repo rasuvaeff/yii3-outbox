@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.3.0 — 2026-07-26
+
+- Document the transactional invariant the pattern rests on: `Outbox::record()`
+  must be called inside the same DB transaction as the business write, and the
+  storage must use that same connection. Stated in the `StorageInterface::save()`
+  and `Outbox::record()` PHPDoc, in both READMEs and in `llms.txt` — it was
+  unwritten knowledge before.
+- Document `claim()` as the atomic primitive `Processor` actually uses. The
+  "Implementing storage" example only showed `findPending()`, so a hand-written
+  storage following the README got non-atomic polling and duplicate delivery
+  across concurrent workers.
+- Add the missing `Processing` case to the `OutboxStatus` reference table, and
+  add a `StorageInterface` section to the API reference.
+- `InMemoryStorage` implements `Countable`, so `count($storage)` works next to
+  the existing `count()` method.
+- Declare `ext-json` in `require`: `Serializer` calls `json_encode()`/`json_decode()`.
+
 ## 1.2.0 — 2026-07-25
 
 - `Outbox::record()` and `OutboxMessage::create()` accept an optional `id`:

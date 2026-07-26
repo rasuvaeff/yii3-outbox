@@ -9,6 +9,29 @@ namespace Rasuvaeff\Yii3Outbox;
  */
 interface StorageInterface
 {
+    /**
+     * Persists the message.
+     *
+     * The outbox pattern only holds if this write commits atomically with the
+     * business write it describes. The core cannot enforce that: it opens no
+     * transaction and knows nothing about the caller's connection. An
+     * implementation is therefore required to write through the very connection
+     * the application uses for its business tables, and the application is
+     * required to call {@see Outbox::record()} inside the same transaction as
+     * the business write:
+     *
+     * ```php
+     * $db->transaction(static function () use ($orders, $outbox, $order): void {
+     *     $orders->insert($order);
+     *     $outbox->record(type: 'order.created', payload: $json);
+     * });
+     * ```
+     *
+     * Commit the business row without the message and the event is lost;
+     * commit the message without the business row and consumers observe an
+     * event that never happened. A storage backed by a different database
+     * (or by a message broker) cannot provide this guarantee at all.
+     */
     public function save(OutboxMessage $message): void;
 
     /**

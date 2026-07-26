@@ -179,6 +179,16 @@ final class InMemoryStorageTest
         Assert::same($this->fixture->count(), 2);
     }
 
+    public function isCountable(): void
+    {
+        Assert::instanceOf($this->fixture, \Countable::class);
+        Assert::same(count($this->fixture), 0);
+
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->build());
+
+        Assert::same(count($this->fixture), 1);
+    }
+
     public function iteratesOverMessages(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->build());
