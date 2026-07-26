@@ -13,9 +13,10 @@ Public API:
 - `MessageIdGeneratorInterface` — produces the message id when none is passed
 - `RandomHexIdGenerator` — default: 32 random hex characters
 - `OutboxMessage` — immutable message value object with `aggregateId` support
-- `OutboxStatus` — enum: `Pending`, `Published`, `Failed`
+- `OutboxStatus` — enum: `Pending`, `Processing`, `Published`, `Failed`
 - `SerializerInterface` / `Serializer` — JSON serialization
-- `StorageInterface` — storage contract (save, findPending, markPublished, markFailed, getById)
+- `StorageInterface` — storage contract (save, claim, findPending, markPublished,
+  markFailed, getById)
 - `PublisherInterface` — publishing contract
 - `PublishException` — thrown on publish failure
 - `RetryPolicy` — configurable max attempts and delay
@@ -30,8 +31,14 @@ DB storage is a separate package: `rasuvaeff/yii3-outbox-db`.
 1. **Verification is mandatory.** Never claim "done" without a fresh green
    `composer build`. "Should work" does not count.
 2. **No suppressions.** No `@psalm-suppress`, no baseline. Fix the root cause.
-3. **Storage is pluggable.** Never hardcode DB assumptions in core. Use
-   `StorageInterface` everywhere.
+3. **Storage is pluggable, and `save()` carries an unenforceable contract.**
+   Never hardcode DB assumptions in core — use `StorageInterface` everywhere.
+   That interface also states the invariant the whole pattern rests on:
+   `Outbox::record()` must run inside the caller's business transaction, and the
+   implementation must write through the caller's connection. The core opens no
+   transaction and cannot enforce it, so it must stay documented in the
+   `StorageInterface::save()` PHPDoc, both READMEs and `llms.txt`. Do not
+   silently drop it.
 4. **Preserve the public contract.** Update README + tests with any API change.
 
 ## Commands
@@ -71,12 +78,23 @@ make release-check
   (keeps status `Pending`). Only calls `markFailed` when retries are exhausted.
 - `RetryPolicy::isReadyForRetry()` takes `DateTimeImmutable $now` — caller provides
   the clock, not the policy.
-- `findPending(array $types = [], int $limit = 1000)` must return `Pending`
-  messages with any attempt count — `RetryPolicy` filters which are ready for
-  retry. `$types` restricts to those message types (empty = all) so several
-  consumers (e.g. a generic `Processor` and a ClickHouse exporter) can share one
-  outbox without competing for each other's messages.
-- `InMemoryStorage` does not persist between requests — test use only.
+- **`claim()` is what `Processor::process()` calls, not `findPending()`.** It
+  must atomically move up to `$limit` `Pending` messages to `Processing` and
+  return them, so concurrent workers never receive the same message. Every
+  claimed message must end in `markPublished()`, `markFailed()` or
+  `save($msg->withStatus(Pending))` — nothing may stay `Processing`. Docs that
+  show `findPending()` as a worker's fetch teach non-atomic polling; keep the
+  distinction explicit in README/`llms.txt`.
+- `findPending(array $types = [], int $limit = 1000)` is the read-only
+  counterpart: it must return `Pending` messages with any attempt count —
+  `RetryPolicy` filters which are ready for retry — but it locks and marks
+  nothing, so it is for dashboards and diagnostics, never a worker.
+- `$types` restricts to those message types (empty = all) so several consumers
+  (e.g. a generic `Processor` and a ClickHouse exporter) can share one outbox.
+  Since `claim()` hands a message to exactly one caller, their type sets must not
+  overlap, or an overlapping message reaches only the first claimer.
+- `InMemoryStorage` does not persist between requests — test use only. It
+  implements `Countable` and `IteratorAggregate` alongside `StorageInterface`.
 - `Outbox` and `Processor` require `Psr\Clock\ClockInterface` injection.
 - **Message id: domain id first, generator second.** `record(id: ...)` skips the
   generator entirely — that is the path that keeps republished domain events
@@ -96,7 +114,7 @@ make release-check
 
 ## When you finish
 
-- Update `README.md` (and `examples/` if usage changed); update `CHANGELOG.md`
-  when releasing.
+- Update `README.md` **and `README.ru.md`** (both languages, same commit; and
+  `examples/` if usage changed); update `CHANGELOG.md` when releasing.
 - Re-run `composer build`; if the change affects the public API or release
   process, also run `make release-check`. Paste the output.
