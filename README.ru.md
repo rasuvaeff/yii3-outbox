@@ -50,6 +50,36 @@ $message = $outbox->record(
 );
 ```
 
+### Транзакционная гарантия
+
+Паттерн оправдывает своё название только тогда, когда запись в outbox
+коммитится **атомарно с той бизнес-записью, которую она описывает**. Ядро не
+может это обеспечить: оно не открывает транзакцию и ничего не знает о вашем
+соединении. Отсюда две обязанности на стороне приложения:
+
+1. Вызывать `record()` внутри той же транзакции БД, что и бизнес-запись.
+2. Использовать хранилище, пишущее через то же соединение, что и бизнес-таблицы
+   — `rasuvaeff/yii3-outbox-db` принимает `ConnectionInterface` именно ради
+   этого.
+
+```php
+$db->transaction(static function () use ($orders, $outbox, $order, $json): void {
+    $orders->insert($order);
+
+    $outbox->record(
+        type: 'order.created',
+        payload: $json,
+        aggregateId: $order->id,
+    );
+});
+```
+
+Нарушьте любую из двух — и гарантии нет: закоммитили заказ без сообщения, и
+событие потеряно навсегда; закоммитили сообщение без заказа, и потребители
+увидят событие, которого не было. Хранилище поверх другой БД (или поверх
+брокера сообщений) такую гарантию не даёт в принципе, а `InMemoryStorage` —
+тестовый дубль, а не долговечное хранилище.
+
 ### Идентификаторы сообщений
 
 Id сообщения — это первичный ключ таблицы outbox, а при экспорте сообщений в
@@ -106,6 +136,13 @@ $outbox = new Outbox(storage: $storage, clock: $clock, idGenerator: new Uuid7IdG
 
 ### Реализация хранилища
 
+`claim()` — примитив, на котором держится весь цикл поллинга: `Processor`
+вызывает именно его, а не `findPending()`. Он обязан атомарно переводить
+сообщения в `Processing` и возвращать их, чтобы два воркера, опрашивающие одну
+таблицу, никогда не получили одно и то же сообщение. `findPending()` — его
+read-only двойник: годится для дашбордов и диагностики, не годится как выборка
+воркера.
+
 ```php
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -115,13 +152,26 @@ final class DbStorage implements StorageInterface
     public function save(OutboxMessage $message): void
     {
         // INSERT INTO outbox ... ON CONFLICT(id) DO UPDATE ...
+        // Должно идти по соединению вызывающего, чтобы коммититься с бизнес-записью.
+    }
+
+    public function claim(array $types = [], int $limit = 1000): array
+    {
+        // Атомарно: SELECT id со status = 'pending' [AND type IN (:types)]
+        //   LIMIT :limit FOR UPDATE SKIP LOCKED
+        // затем UPDATE outbox SET status = 'processing', claimed_by = :worker
+        //   WHERE id IN (...) — и вернуть захваченные строки.
+        // Каждое захваченное сообщение обязано закончить markPublished(),
+        // markFailed() или save($msg->withStatus(Pending)) — ни одно не должно
+        // остаться в Processing.
     }
 
     public function findPending(array $types = [], int $limit = 1000): array
     {
         // SELECT * FROM outbox WHERE status = 'pending'
-        //   [AND type IN (:types)] LIMIT :limit  -- empty $types = all types
-        // For retry support, also return status = 'pending' with attempts > 0
+        //   [AND type IN (:types)] LIMIT :limit  -- пустой $types = все типы
+        // Read-only: атомарности нет, два воркера получат одни и те же строки.
+        // Для поддержки повторов возвращать и status = 'pending' с attempts > 0
     }
 
     public function markPublished(OutboxMessage $message): void
@@ -218,7 +268,23 @@ $storage->clear();
 | Метод | Описание |
 |---|---|
 | `__construct(storage, clock, idGenerator?)` | Основная точка входа |
-| `record(type, payload, aggregateId?, id?)` | Создаёт и сохраняет сообщение, возвращает `OutboxMessage` |
+| `record(type, payload, aggregateId?, id?)` | Создаёт и сохраняет сообщение, возвращает `OutboxMessage`. Вызывать внутри бизнес-транзакции |
+
+### StorageInterface
+
+| Метод | Описание |
+|---|---|
+| `save(message)` | Сохранение. Должно коммититься с бизнес-записью — см. [Транзакционная гарантия](#транзакционная-гарантия) |
+| `claim(types = [], limit = 1000)` | **Атомарно** переводит до `limit` сообщений из `Pending` в `Processing` и возвращает их. То, что использует `Processor`; безопасно для конкурентных воркеров |
+| `findPending(types = [], limit = 1000)` | Read-only список `Pending`-сообщений. Атомарности нет — для дашбордов, не для воркеров |
+| `markPublished(message)` | Терминальный успех |
+| `markFailed(message)` | Терминальная неудача |
+| `getById(id)` | `?OutboxMessage` |
+
+`types` фильтрует по типу сообщения (пустой = все) — так несколько потребителей
+делят один outbox. Поскольку `claim()` отдаёт сообщение ровно одному
+вызывающему, наборы типов независимых потребителей не должны пересекаться,
+иначе сообщение дойдёт только до того воркера, который захватил его первым.
 
 ### OutboxMessage
 
@@ -245,11 +311,12 @@ $storage->clear();
 
 ### OutboxStatus
 
-| Case | Значение |
-|---|---|
-| `Pending` | `'pending'` |
-| `Published` | `'published'` |
-| `Failed` | `'failed'` |
+| Case | Значение | Смысл |
+|---|---|---|
+| `Pending` | `'pending'` | Ожидает публикации, включая повторы с `attempts > 0` |
+| `Processing` | `'processing'` | Захвачено воркером; другой воркер его не возьмёт |
+| `Published` | `'published'` | Терминальный успех |
+| `Failed` | `'failed'` | Терминальная неудача, повторы исчерпаны |
 
 ### RetryPolicy
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Outbox;
 
 use ArrayIterator;
+use Countable;
 use IteratorAggregate;
 use Traversable;
 
@@ -13,7 +14,7 @@ use Traversable;
  *
  * @implements IteratorAggregate<string, OutboxMessage>
  */
-final class InMemoryStorage implements StorageInterface, IteratorAggregate
+final class InMemoryStorage implements StorageInterface, IteratorAggregate, Countable
 {
     /** @var array<string, OutboxMessage> */
     private array $messages = [];
@@ -98,6 +99,7 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate
         return new ArrayIterator($this->messages);
     }
 
+    #[\Override]
     public function count(): int
     {
         return count($this->messages);

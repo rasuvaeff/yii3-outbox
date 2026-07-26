@@ -26,6 +26,13 @@ final readonly class Outbox
     }
 
     /**
+     * Records a message through the configured storage.
+     *
+     * Must be called inside the same database transaction as the business write
+     * this message describes — otherwise the two can diverge and the outbox
+     * guarantee is void. See {@see StorageInterface::save()} for the full
+     * contract.
+     *
      * @param ?string $id the domain event's identifier when this message mirrors
      *                    one — the generator is then not consulted, so republishing
      *                    the same event cannot produce two different message ids

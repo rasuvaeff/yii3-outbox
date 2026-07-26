@@ -8,6 +8,10 @@ composer require rasuvaeff/yii3-outbox
 
 ## Rules
 
+- **`Outbox::record()` must be called inside the same DB transaction as the
+  business write it describes, and the storage must use the same connection.**
+  The core opens no transaction and cannot enforce this. Without it the pattern
+  gives no guarantee: a lost message or an event that never happened.
 - Core has no DB dependency. Implement `StorageInterface` for persistence.
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
@@ -171,6 +175,9 @@ $storage = new InMemoryStorage();
 $storage->save($message);
 $storage->findPending(limit: 10);
 $storage->getById($id);
-$storage->count();
+$storage->count();  // implements Countable, so count($storage) works too
 $storage->clear();
 ```
+
+Test double only — it holds messages in process memory and offers no
+transactional guarantee.

@@ -50,6 +50,36 @@ $message = $outbox->record(
 );
 ```
 
+### The transactional guarantee
+
+The pattern is only worth its name when the outbox write commits **atomically
+with the business write it describes**. The core cannot enforce this: it opens
+no transaction and knows nothing about your connection. Two obligations are
+therefore yours:
+
+1. Call `record()` inside the same database transaction as the business write.
+2. Use a storage that writes through the same connection as your business
+   tables — `rasuvaeff/yii3-outbox-db` takes a `ConnectionInterface` for
+   exactly this reason.
+
+```php
+$db->transaction(static function () use ($orders, $outbox, $order, $json): void {
+    $orders->insert($order);
+
+    $outbox->record(
+        type: 'order.created',
+        payload: $json,
+        aggregateId: $order->id,
+    );
+});
+```
+
+Break either obligation and the guarantee is void: commit the order without the
+message and the event is lost forever; commit the message without the order and
+consumers observe an event that never happened. A storage backed by a different
+database — or by a message broker — cannot provide this guarantee at all, and
+`InMemoryStorage` is a test double, not a durable one.
+
 ### Message ids
 
 The message id is the primary key of the outbox table and, when messages are
@@ -105,6 +135,12 @@ the choice stays yours.
 
 ### Implementing storage
 
+`claim()` is the primitive the whole polling loop rests on — `Processor` calls
+it, never `findPending()`. It must atomically move messages to `Processing` and
+return them, so that two workers polling the same table never receive the same
+message. `findPending()` is the read-only counterpart: safe for dashboards and
+diagnostics, unsafe as a worker's fetch.
+
 ```php
 use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
@@ -114,12 +150,24 @@ final class DbStorage implements StorageInterface
     public function save(OutboxMessage $message): void
     {
         // INSERT INTO outbox ... ON CONFLICT(id) DO UPDATE ...
+        // Must run on the caller's connection so it commits with the business write.
+    }
+
+    public function claim(array $types = [], int $limit = 1000): array
+    {
+        // Atomically: SELECT ids of status = 'pending' [AND type IN (:types)]
+        //   LIMIT :limit FOR UPDATE SKIP LOCKED
+        // then UPDATE outbox SET status = 'processing', claimed_by = :worker
+        //   WHERE id IN (...) — and return the claimed rows.
+        // Every claimed message must end up markPublished(), markFailed(),
+        // or save($msg->withStatus(Pending)); none may stay Processing.
     }
 
     public function findPending(array $types = [], int $limit = 1000): array
     {
         // SELECT * FROM outbox WHERE status = 'pending'
         //   [AND type IN (:types)] LIMIT :limit  -- empty $types = all types
+        // Read-only: no atomicity, so two workers would both get the same rows.
         // For retry support, also return status = 'pending' with attempts > 0
     }
 
@@ -217,7 +265,23 @@ $storage->clear();
 | Method | Description |
 |---|---|
 | `__construct(storage, clock, idGenerator?)` | Main entry point; default generator = `RandomHexIdGenerator` |
-| `record(type, payload, aggregateId?, id?)` | Create and persist message, returns `OutboxMessage`. `id` = the domain event's id; omitted → generator |
+| `record(type, payload, aggregateId?, id?)` | Create and persist message, returns `OutboxMessage`. `id` = the domain event's id; omitted → generator. Call inside the business transaction |
+
+### StorageInterface
+
+| Method | Description |
+|---|---|
+| `save(message)` | Persist. Must commit with the business write — see [The transactional guarantee](#the-transactional-guarantee) |
+| `claim(types = [], limit = 1000)` | **Atomically** moves up to `limit` `Pending` messages to `Processing` and returns them. What `Processor` uses; safe for concurrent workers |
+| `findPending(types = [], limit = 1000)` | Read-only listing of `Pending` messages. No atomicity — for dashboards, not for workers |
+| `markPublished(message)` | Terminal success |
+| `markFailed(message)` | Terminal failure |
+| `getById(id)` | `?OutboxMessage` |
+
+`types` filters by message type (empty = all), which is how several consumers
+share one outbox. Since `claim()` hands a message to exactly one caller, the
+type sets of independent consumers must not overlap — otherwise each message
+reaches only whichever worker claimed it first.
 
 ### OutboxMessage
 
@@ -244,11 +308,12 @@ $storage->clear();
 
 ### OutboxStatus
 
-| Case | Value |
-|---|---|
-| `Pending` | `'pending'` |
-| `Published` | `'published'` |
-| `Failed` | `'failed'` |
+| Case | Value | Meaning |
+|---|---|---|
+| `Pending` | `'pending'` | Awaiting publication, including retries with `attempts > 0` |
+| `Processing` | `'processing'` | Claimed by a worker; no other worker may take it |
+| `Published` | `'published'` | Terminal success |
+| `Failed` | `'failed'` | Terminal failure, retries exhausted |
 
 ### RetryPolicy
 
