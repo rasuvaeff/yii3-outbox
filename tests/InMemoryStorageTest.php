@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\PropertyTesting\StateMachine\CommandSequence;
@@ -322,10 +323,26 @@ final class InMemoryStorageTest
      * per-message status — coverage the isolated single-operation tests above do
      * not reach.
      */
-    #[Property(runs: 300)]
+    #[Property(runs: 300, timeoutMs: 2000)]
     public function interleavedLifecycleOperationsTrackTheModel(CommandSequence $sequence): void
     {
         $harness = new OutboxHarness();
+
+        $kinds = [];
+
+        foreach ($sequence->commands as $command) {
+            $kinds[$command::class] = true;
+        }
+
+        // The outcomes worth naming are the ones a uniform draw over four
+        // commands practically never produces: a run that never claims
+        // (everything stays pending) and one that never publishes (a queue
+        // that only accumulates). Measured over 400 swarmed sequences: 39.5%
+        // never claim, 38.5% never publish, 24.2% use all four. Each floor is
+        // under half its share, so a seed cannot trip it.
+        Classify::cover($kinds !== [] && !isset($kinds[ClaimCommand::class]), 'never claimed', 15.0);
+        Classify::cover($kinds !== [] && !isset($kinds[PublishCommand::class]), 'never published', 15.0);
+        Classify::cover(\count($kinds) === 4, 'all four commands present', 10.0);
 
         StateMachine::check($sequence, static fn(): OutboxHarness => $harness);
 
@@ -337,11 +354,17 @@ final class InMemoryStorageTest
     /** @return array<string, ArbitraryInterface> */
     public static function interleavedLifecycleOperationsTrackTheModelGenerators(): array
     {
-        return ['sequence' => Gen::commands([], [
+        // Swarmed: each sequence may use only a subset of the four commands.
+        // Drawing uniformly from all four, a sequence that never publishes —
+        // an outbox that only accumulates — needs every one of up to a hundred
+        // picks to miss the same command, which effectively never happens.
+        // minLength stays at the default 0, so a subset from which nothing
+        // applies yields an empty sequence rather than GenerationExhausted.
+        return ['sequence' => Gen::swarm(Gen::commands([], [
             Gen::constant(new SaveCommand()),
             Gen::constant(new ClaimCommand()),
             Gen::map(Gen::intBetween(0, 4), static fn(int $index): PublishCommand => new PublishCommand($index)),
             Gen::map(Gen::intBetween(0, 4), static fn(int $index): FailCommand => new FailCommand($index)),
-        ])];
+        ]))];
     }
 }

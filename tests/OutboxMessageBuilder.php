@@ -14,7 +14,7 @@ final class OutboxMessageBuilder
     private string $type = 'test.event';
     private string $payload = '{}';
     private OutboxStatus $status = OutboxStatus::Pending;
-    private DateTimeImmutable $createdAt;
+    private readonly DateTimeImmutable $createdAt;
     private int $attempts = 0;
     private ?DateTimeImmutable $lastAttemptAt = null;
     private ?string $aggregateId = null;
