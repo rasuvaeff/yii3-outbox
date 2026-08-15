@@ -35,7 +35,7 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate, Coun
                 continue;
             }
 
-            if ($types !== [] && !in_array($message->getType(), $types, true)) {
+            if ($types !== [] && !in_array($message->getType(), $types, strict: true)) {
                 continue;
             }
 
@@ -59,7 +59,7 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate, Coun
                 continue;
             }
 
-            if ($types !== [] && !in_array($message->getType(), $types, true)) {
+            if ($types !== [] && !in_array($message->getType(), $types, strict: true)) {
                 continue;
             }
 

@@ -94,7 +94,7 @@ final class SerializerTest
     public function producesValidJson(): void
     {
         $json = $this->fixture->serialize($this->message);
-        $decoded = json_decode($json, true);
+        $decoded = json_decode($json, associative: true);
 
         Assert::true(is_array($decoded));
         Assert::same($decoded['id'], 'abc123');

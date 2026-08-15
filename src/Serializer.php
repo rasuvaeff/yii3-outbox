@@ -30,7 +30,7 @@ final readonly class Serializer implements SerializerInterface
         try {
             return json_encode($data, JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
-            throw new InvalidArgumentException('Failed to serialize message: ' . $e->getMessage());
+            throw new InvalidArgumentException('Failed to serialize message: ' . $e->getMessage(), $e->getCode(), $e);
         }
     }
 
@@ -38,9 +38,9 @@ final readonly class Serializer implements SerializerInterface
     public function deserialize(string $data): OutboxMessage
     {
         try {
-            $decoded = json_decode($data, true, flags: JSON_THROW_ON_ERROR);
+            $decoded = json_decode($data, associative: true, flags: JSON_THROW_ON_ERROR);
         } catch (JsonException $e) {
-            throw new InvalidArgumentException('Failed to deserialize message: ' . $e->getMessage());
+            throw new InvalidArgumentException('Failed to deserialize message: ' . $e->getMessage(), $e->getCode(), $e);
         }
 
         if (!is_array($decoded)) {
