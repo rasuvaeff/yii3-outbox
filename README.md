@@ -228,8 +228,8 @@ $processor = new Processor(
 
 $result = $processor->process();
 // $result->published — successfully published
-// $result->failed   — publish exceptions (message kept Pending if retries remain)
-// $result->skipped  — not yet ready for retry
+// $result->failed   — publish failures and messages that ran out of attempts
+// $result->skipped  — not yet ready for retry (backoff has not elapsed)
 ```
 
 ### Retry behaviour
@@ -237,6 +237,19 @@ $result = $processor->process();
 When a publish fails:
 - If attempts < `maxAttempts` → message stays `Pending`, will be retried after `delaySeconds`
 - If attempts >= `maxAttempts` → message is marked `Failed` (terminal)
+
+Every message a batch claims leaves `Processing`. A message that is claimed
+with its attempts already spent — restored from a backup, or left behind by a
+`markFailed()` that never reached the database — is marked `Failed` on sight
+rather than saved back as `Pending`, which would make it circle claim → skip →
+save forever with no alert on `Failed` ever firing.
+
+A publisher that throws something other than `PublishException` is a bug, and
+`process()` rethrows it: the failure is not silently retried as if it were a
+delivery problem. Before the exception propagates, the current message is
+persisted per the retry policy and every message the batch had claimed but not
+yet attempted is released back to `Pending` (or failed, if it too was out of
+attempts). Nothing is left in `Processing` for a human to find with raw SQL.
 
 ```php
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
@@ -341,10 +354,20 @@ reaches only whichever worker claimed it first.
 
 ### Serializer
 
+`Serializer` implements `SerializerInterface` — the extension point a storage
+backend or transport uses to move a message across a boundary as a string. Swap
+in your own implementation for a different wire format; the interface is the
+contract, `Serializer` is the JSON default.
+
 | Method | Description |
 |---|---|
 | `serialize(message)` | Message to JSON |
 | `deserialize(data)` | JSON to Message |
+
+`deserialize()` rejects every malformed input with `InvalidArgumentException` —
+missing fields, wrong types, an unknown status, an unparsable or empty
+datetime. A caller catching "bad input" never has to also catch `ValueError` or
+`DateMalformedStringException` from a field the parser forgot to guard.
 
 ## Security
 

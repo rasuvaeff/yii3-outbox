@@ -13,10 +13,26 @@ final class StubPublisher implements PublisherInterface
     public bool $shouldFail = false;
     public ?OutboxMessage $lastPublished = null;
 
+    /**
+     * Anything the publisher throws that is not a {@see PublishException} —
+     * a transport exception it forgot to wrap, a TypeError, an \Error.
+     */
+    public ?\Throwable $throwUnexpected = null;
+
+    /**
+     * @var list<string>
+     */
+    public array $publishedIds = [];
+
     #[\Override]
     public function publish(OutboxMessage $message): void
     {
         $this->lastPublished = $message;
+        $this->publishedIds[] = $message->getId();
+
+        if ($this->throwUnexpected !== null) {
+            throw $this->throwUnexpected;
+        }
 
         if ($this->shouldFail) {
             throw new PublishException(

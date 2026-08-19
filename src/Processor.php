@@ -27,6 +27,18 @@ final readonly class Processor
         }
     }
 
+    /**
+     * Publishes one claimed batch.
+     *
+     * Every message the batch claimed leaves `Processing`: published, saved
+     * back as `Pending` for a later retry, or marked `Failed` once the
+     * {@see RetryPolicy} has no attempts left. That holds for the exceptional
+     * path too — a publisher throwing something other than
+     * {@see PublishException} releases the rest of the batch before the
+     * exception propagates.
+     *
+     * @throws \Throwable whatever the publisher threw that was not a {@see PublishException}
+     */
     public function process(): ProcessingResult
     {
         $messages = $this->storage->claim(limit: $this->batchSize);
@@ -35,7 +47,18 @@ final readonly class Processor
         $skipped = 0;
         $now = $this->clock->now();
 
-        foreach ($messages as $message) {
+        foreach ($messages as $index => $message) {
+            // Attempts already spent: this message is not waiting for anything,
+            // it is done. Saving it back as Pending — which a plain
+            // isReadyForRetry() check does — makes it circle claim -> skip ->
+            // save forever, invisible to an alert watching Failed.
+            if (!$this->retryPolicy->shouldRetry($message)) {
+                $this->terminateExhausted($message);
+                $failed++;
+
+                continue;
+            }
+
             if (!$this->retryPolicy->isReadyForRetry($message, $now)) {
                 $this->storage->save($message->withStatus(OutboxStatus::Pending));
                 $skipped++;
@@ -64,6 +87,29 @@ final readonly class Processor
                 }
 
                 $failed++;
+            } catch (\Throwable $e) {
+                // A publisher that lets something other than PublishException
+                // escape is a bug, and this method rethrows it rather than
+                // pretending the delivery merely failed. What it must not do is
+                // leave rows behind in Processing: nothing in the API can move
+                // them back, so every message this batch claimed is released
+                // before the exception continues on its way.
+                $this->logger->error('Outbox publisher threw an unexpected exception', [
+                    'messageId' => $message->getId(),
+                    'attempts' => $message->getAttempts(),
+                    'exception' => $e::class,
+                    'error' => $e->getMessage(),
+                ]);
+
+                if ($this->retryPolicy->shouldRetry($message)) {
+                    $this->storage->save($message->withStatus(OutboxStatus::Pending));
+                } else {
+                    $this->storage->markFailed($message);
+                }
+
+                $this->release(\array_slice($messages, $index + 1));
+
+                throw $e;
             }
         }
 
@@ -72,5 +118,37 @@ final readonly class Processor
             failed: $failed,
             skipped: $skipped,
         );
+    }
+
+    /**
+     * Puts back messages this batch claimed but never attempted. One that
+     * arrived with no attempts left is terminated rather than saved as
+     * `Pending` — exactly what the loop above would have done on reaching it,
+     * and the only way the release does not recreate the state this class
+     * exists to avoid.
+     *
+     * @param list<OutboxMessage> $messages
+     */
+    private function release(array $messages): void
+    {
+        foreach ($messages as $message) {
+            if ($this->retryPolicy->shouldRetry($message)) {
+                $this->storage->save($message->withStatus(OutboxStatus::Pending));
+
+                continue;
+            }
+
+            $this->terminateExhausted($message);
+        }
+    }
+
+    private function terminateExhausted(OutboxMessage $message): void
+    {
+        $this->logger->warning('Outbox message exhausted its retries', [
+            'messageId' => $message->getId(),
+            'attempts' => $message->getAttempts(),
+        ]);
+
+        $this->storage->markFailed($message);
     }
 }

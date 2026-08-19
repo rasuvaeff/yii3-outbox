@@ -16,7 +16,9 @@ composer require rasuvaeff/yii3-outbox
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
 - `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
-- Failed publish keeps message as `Pending` if retries remain; marks `Failed` only when exhausted.
+- Failed publish keeps message as `Pending` if retries remain; marks `Failed` when exhausted.
+- Every claimed message leaves `Processing`. A message claimed with attempts already spent is marked `Failed` on sight (it can never be retried and nothing else would terminate it).
+- A publisher throwing anything other than `PublishException` is rethrown by `process()`; before that the current message is persisted per the retry policy and the rest of the claimed batch is released back to `Pending`, so nothing is stranded in `Processing`.
 - `Processor` and `Outbox` require a `Psr\Clock\ClockInterface` implementation.
 - Message id: pass `id:` (the domain event's id) to keep republishes deduplicable,
   otherwise `MessageIdGeneratorInterface` produces one. Default
@@ -156,10 +158,17 @@ $result->skipped;   // int — not ready for retry
 $result->total();   // int
 ```
 
-### Serializer
+### SerializerInterface / Serializer
+
+`Serializer` is the JSON implementation of `SerializerInterface`; implement the
+interface for another wire format. `deserialize()` rejects every malformed
+input with `InvalidArgumentException` (missing field, wrong type, unknown
+status, unparsable or empty datetime) — never a raw `ValueError` or
+`DateMalformedStringException`.
 
 ```php
 use Rasuvaeff\Yii3Outbox\Serializer;
+use Rasuvaeff\Yii3Outbox\SerializerInterface;
 
 $serializer = new Serializer();
 $json = $serializer->serialize($message);
