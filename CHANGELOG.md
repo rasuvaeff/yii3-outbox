@@ -12,6 +12,21 @@
   is persisted per the retry policy and the rest of the claimed batch is
   released first
   ([#18](https://github.com/rasuvaeff/yii3-outbox/issues/18)).
+- A storage failure is no longer reported as a publisher failure. `markPublished()`
+  ran inside the publisher's `try`, so throwing there after a successful
+  `publish()` logged `Outbox publisher threw an unexpected exception` and sent an
+  operator to debug the wrong component. The two calls now have separate
+  handlers; the message still goes back to `Pending` and is published again on a
+  later run, which is the at-least-once behaviour the message id exists to let
+  consumers deduplicate.
+- Releasing an aborted batch no longer swallows the exception that aborted it.
+  `release()` reaches for the same storage that may be the reason the batch
+  failed; its `save()` throwing replaced the original exception and left the
+  remaining messages unreleased. Each message is now released independently and
+  a release failure is logged (`Failed to release a claimed outbox message`,
+  `Failed to persist an outbox message while aborting the batch`) rather than
+  thrown. The invariant is documented for what it is: best-effort, since a
+  storage that is down cannot be told anything.
 - A `Pending` message claimed with its attempts already spent is marked `Failed`
   instead of being saved back as `Pending`. It could not be retried and nothing
   else would ever terminate it, so it circled claim → skip → save forever while

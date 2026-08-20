@@ -295,6 +295,201 @@ final class ProcessorTest
         Assert::same($this->storage->getById('msg-2')?->getAttempts(), 0);
     }
 
+    public function requeuesTheMessageWhenMarkingItPublishedFails(): void
+    {
+        // publish() succeeded and markPublished() did not: the message reached
+        // its consumer, only the record of that did not. It goes back to
+        // Pending and a later run publishes it again — this package delivers at
+        // least once and the id is the consumer's deduplication key. Leaving it
+        // Processing would be a row nothing in the API can move.
+        $logger = new SpyLogger();
+        $storage = new FailingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            logger: $logger,
+        );
+
+        foreach (['msg-1', 'msg-2'] as $id) {
+            $storage->save(
+                OutboxMessageBuilder::create()->withId($id)->withStatus(OutboxStatus::Pending)->build(),
+            );
+        }
+
+        $storage->failMarkPublished = new \RuntimeException('deadlock detected');
+
+        $thrown = null;
+
+        try {
+            $processor->process();
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::same($thrown->getMessage(), 'deadlock detected');
+        Assert::same($this->publisher->publishedIds, ['msg-1']);
+
+        foreach (['msg-1', 'msg-2'] as $id) {
+            $stored = $storage->getById($id);
+            Assert::notNull($stored);
+            Assert::same($stored->getStatus(), OutboxStatus::Pending);
+        }
+
+        Assert::same($storage->getById('msg-1')?->getAttempts(), 1);
+        Assert::same($storage->getById('msg-2')?->getAttempts(), 0);
+    }
+
+    public function doesNotBlameThePublisherWhenMarkingPublishedFails(): void
+    {
+        // The old shape ran markPublished() inside the publisher's try, so a
+        // storage incident logged "publisher threw an unexpected exception" and
+        // sent an operator to debug the wrong component.
+        $logger = new SpyLogger();
+        $storage = new FailingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            logger: $logger,
+        );
+
+        $storage->save(
+            OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build(),
+        );
+        $storage->failMarkPublished = new \RuntimeException('deadlock detected');
+
+        try {
+            $processor->process();
+        } catch (\RuntimeException) {
+        }
+
+        Assert::same($logger->records, [[
+            'level' => 'error',
+            'message' => 'Outbox message was published but could not be marked published',
+            'context' => [
+                'messageId' => 'msg-1',
+                'attempts' => 1,
+                'exception' => \RuntimeException::class,
+                'error' => 'deadlock detected',
+            ],
+        ]]);
+    }
+
+    public function aFailedReleaseDoesNotReplaceTheExceptionThatAbortedTheBatch(): void
+    {
+        // The release reaches for the storage that may well be why the batch
+        // aborted. If its own failure propagated, the caller would receive a
+        // symptom instead of the cause.
+        $logger = new SpyLogger();
+        $storage = new FailingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            logger: $logger,
+        );
+
+        foreach (['msg-1', 'msg-2'] as $id) {
+            $storage->save(
+                OutboxMessageBuilder::create()->withId($id)->withStatus(OutboxStatus::Pending)->build(),
+            );
+        }
+
+        $this->publisher->throwUnexpected = new \RuntimeException('connection reset');
+        $storage->failSave = new \LogicException('storage is down');
+
+        $thrown = null;
+
+        try {
+            $processor->process();
+        } catch (\Throwable $e) {
+            $thrown = $e;
+        }
+
+        Assert::notNull($thrown);
+        Assert::instanceOf($thrown, \RuntimeException::class);
+        Assert::same($thrown->getMessage(), 'connection reset');
+
+        Assert::same($logger->records, [
+            [
+                'level' => 'error',
+                'message' => 'Outbox publisher threw an unexpected exception',
+                'context' => [
+                    'messageId' => 'msg-1',
+                    'attempts' => 1,
+                    'exception' => \RuntimeException::class,
+                    'error' => 'connection reset',
+                ],
+            ],
+            [
+                'level' => 'error',
+                'message' => 'Failed to persist an outbox message while aborting the batch',
+                'context' => [
+                    'messageId' => 'msg-1',
+                    'exception' => \LogicException::class,
+                    'error' => 'storage is down',
+                ],
+            ],
+            [
+                'level' => 'error',
+                'message' => 'Failed to release a claimed outbox message',
+                'context' => [
+                    'messageId' => 'msg-2',
+                    'exception' => \LogicException::class,
+                    'error' => 'storage is down',
+                ],
+            ],
+        ]);
+    }
+
+    public function continuesProcessingAfterTerminatingAnExhaustedMessage(): void
+    {
+        // The loop moves on to the next message; it does not stop at the first
+        // one it terminates, which would leave the rest claimed in Processing.
+        $this->storage->save(
+            OutboxMessageBuilder::create()
+                ->withId('msg-1')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(3)
+                ->build(),
+        );
+        $this->storage->save(
+            OutboxMessageBuilder::create()->withId('msg-2')->withStatus(OutboxStatus::Pending)->build(),
+        );
+
+        $result = $this->processor->process();
+
+        Assert::same($result->published, 1);
+        Assert::same($result->failed, 1);
+        Assert::same($this->publisher->publishedIds, ['msg-2']);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Failed);
+        Assert::same($this->storage->getById('msg-2')?->getStatus(), OutboxStatus::Published);
+    }
+
+    public function continuesProcessingAfterAPublishFailure(): void
+    {
+        $this->publisher->failIds = ['msg-1'];
+
+        foreach (['msg-1', 'msg-2'] as $id) {
+            $this->storage->save(
+                OutboxMessageBuilder::create()->withId($id)->withStatus(OutboxStatus::Pending)->build(),
+            );
+        }
+
+        $result = $this->processor->process();
+
+        Assert::same($result->published, 1);
+        Assert::same($result->failed, 1);
+        Assert::same($this->publisher->publishedIds, ['msg-1', 'msg-2']);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($this->storage->getById('msg-2')?->getStatus(), OutboxStatus::Published);
+    }
+
     public function marksFailedWhenAnUnexpectedExceptionSpendsTheLastAttempt(): void
     {
         $processor = new Processor(

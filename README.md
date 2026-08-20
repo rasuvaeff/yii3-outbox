@@ -249,7 +249,24 @@ A publisher that throws something other than `PublishException` is a bug, and
 delivery problem. Before the exception propagates, the current message is
 persisted per the retry policy and every message the batch had claimed but not
 yet attempted is released back to `Pending` (or failed, if it too was out of
-attempts). Nothing is left in `Processing` for a human to find with raw SQL.
+attempts), so nothing is left in `Processing` for a human to find with raw SQL.
+
+The same applies when the storage — not the publisher — is what fails. If
+`markPublished()` throws after `publish()` succeeded, the message reached its
+consumer and only the record of that did not: it goes back to `Pending` and a
+later run publishes it again. **This package delivers at least once**, and the
+message id is what a consumer deduplicates on; leaving the row `Processing`
+instead would be a row nothing in this API can move. That branch logs
+`Outbox message was published but could not be marked published`, not the
+publisher warning — during a storage incident an operator should not be sent to
+debug the publisher.
+
+The release is best-effort by construction: it reaches for the same storage that
+may be the reason the batch aborted, and a storage that is down cannot be told
+anything. What it does guarantee is that its own failures are logged
+(`Failed to release a claimed outbox message`) rather than thrown — the
+exception you catch is always the one that aborted the batch, never a symptom
+raised while reacting to it.
 
 ```php
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
@@ -348,7 +365,7 @@ reaches only whichever worker claimed it first.
 | Property/Method | Description |
 |---|---|
 | `$published` | Count of successfully published messages |
-| `$failed` | Count of publish exceptions this run |
+| `$failed` | Count of publish failures this run, plus messages claimed with no attempts left |
 | `$skipped` | Count of messages not ready for retry |
 | `total()` | Sum of all counters |
 

@@ -11,6 +11,14 @@ use Rasuvaeff\Yii3Outbox\PublishException;
 final class StubPublisher implements PublisherInterface
 {
     public bool $shouldFail = false;
+
+    /**
+     * Ids that fail with a {@see PublishException} while the rest succeed —
+     * for batches where the loop must carry on past a failure.
+     *
+     * @var list<string>
+     */
+    public array $failIds = [];
     public ?OutboxMessage $lastPublished = null;
 
     /**
@@ -34,7 +42,7 @@ final class StubPublisher implements PublisherInterface
             throw $this->throwUnexpected;
         }
 
-        if ($this->shouldFail) {
+        if ($this->shouldFail || in_array($message->getId(), $this->failIds, strict: true)) {
             throw new PublishException(
                 message: 'Publish failed',
                 outboxMessage: $message,
