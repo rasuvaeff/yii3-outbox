@@ -44,6 +44,23 @@ final readonly class RetryPolicy
         return $message->getAttempts() < $this->maxAttempts;
     }
 
+    /**
+     * The instant a message must have been last attempted at or before to be
+     * ready for another attempt now.
+     *
+     * `isReadyForRetry()` asks the question one message at a time; this asks it
+     * once, as a boundary a storage can push into its own query. The two are
+     * the same inequality — `lastAttemptAt + delay <= now` rearranged — so a
+     * backend filtering on this threshold selects exactly the messages the
+     * per-message check would have accepted.
+     *
+     * @see RetryAwareStorageInterface::claimReady()
+     */
+    public function readyThreshold(DateTimeImmutable $now): DateTimeImmutable
+    {
+        return $now->modify('-' . $this->delaySeconds . ' seconds');
+    }
+
     public function isReadyForRetry(OutboxMessage $message, DateTimeImmutable $now): bool
     {
         if (!$this->shouldRetry($message)) {

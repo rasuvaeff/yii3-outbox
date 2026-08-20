@@ -6,6 +6,7 @@ namespace Rasuvaeff\Yii3Outbox;
 
 use ArrayIterator;
 use Countable;
+use DateTimeImmutable;
 use IteratorAggregate;
 use Traversable;
 
@@ -14,7 +15,7 @@ use Traversable;
  *
  * @implements IteratorAggregate<string, OutboxMessage>
  */
-final class InMemoryStorage implements StorageInterface, IteratorAggregate, Countable
+final class InMemoryStorage implements RetryAwareStorageInterface, IteratorAggregate, Countable
 {
     /** @var array<string, OutboxMessage> */
     private array $messages = [];
@@ -52,6 +53,39 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate, Coun
     #[\Override]
     public function claim(array $types = [], int $limit = 1000): array
     {
+        return $this->claimMatching($types, $limit, static fn(OutboxMessage $message): bool => true);
+    }
+
+    #[\Override]
+    public function claimReady(
+        DateTimeImmutable $readyThreshold,
+        int $maxAttempts,
+        array $types = [],
+        int $limit = 1000,
+    ): array {
+        return $this->claimMatching(
+            $types,
+            $limit,
+            static function (OutboxMessage $message) use ($readyThreshold, $maxAttempts): bool {
+                if ($message->getAttempts() >= $maxAttempts) {
+                    return true;
+                }
+
+                $lastAttemptAt = $message->getLastAttemptAt();
+
+                return $lastAttemptAt === null || $lastAttemptAt <= $readyThreshold;
+            },
+        );
+    }
+
+    /**
+     * @param list<string> $types
+     * @param callable(OutboxMessage): bool $isEligible
+     *
+     * @return list<OutboxMessage>
+     */
+    private function claimMatching(array $types, int $limit, callable $isEligible): array
+    {
         $claimed = [];
 
         foreach ($this->messages as $id => $message) {
@@ -60,6 +94,10 @@ final class InMemoryStorage implements StorageInterface, IteratorAggregate, Coun
             }
 
             if ($types !== [] && !in_array($message->getType(), $types, strict: true)) {
+                continue;
+            }
+
+            if (!$isEligible($message)) {
                 continue;
             }
 

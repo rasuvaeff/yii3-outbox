@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
+use DateTimeImmutable;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
@@ -314,6 +315,115 @@ final class InMemoryStorageTest
 
         Assert::count($claimed, 1);
         Assert::same($claimed[0]->getId(), 'exp');
+    }
+
+    public function claimReadyTakesMessagesNeverAttempted(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('fresh')->withStatus(OutboxStatus::Pending)->build());
+
+        $claimed = $this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3);
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'fresh');
+        Assert::same($claimed[0]->getStatus(), OutboxStatus::Processing);
+    }
+
+    public function claimReadySkipsMessagesAttemptedAfterTheThreshold(): void
+    {
+        $this->fixture->save(
+            OutboxMessageBuilder::create()
+                ->withId('recent')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(1)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30'))
+                ->build(),
+        );
+
+        Assert::same($this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3), []);
+        Assert::same($this->fixture->getById('recent')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    public function claimReadyTakesAMessageAttemptedExactlyAtTheThreshold(): void
+    {
+        $this->fixture->save(
+            OutboxMessageBuilder::create()
+                ->withId('boundary')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(1)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:00'))
+                ->build(),
+        );
+
+        $claimed = $this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3);
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'boundary');
+    }
+
+    /**
+     * An exhausted message has nowhere to go but `markFailed()`, and the caller
+     * can only fail what it was handed. Filtering it out on its backoff would
+     * strand it as `Pending` forever.
+     */
+    public function claimReadyTakesExhaustedMessagesRegardlessOfTheThreshold(): void
+    {
+        $this->fixture->save(
+            OutboxMessageBuilder::create()
+                ->withId('exhausted')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(3)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:59'))
+                ->build(),
+        );
+
+        $claimed = $this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3);
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'exhausted');
+    }
+
+    public function claimReadySkipsANotReadyMessageThatPrecedesAReadyOne(): void
+    {
+        $this->fixture->save(
+            OutboxMessageBuilder::create()
+                ->withId('not-ready')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(1)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30'))
+                ->build(),
+        );
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('ready')->withStatus(OutboxStatus::Pending)->build());
+
+        $claimed = $this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3);
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'ready');
+    }
+
+    public function claimReadyRespectsLimitAndTypes(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('exp1')->withType('ab.exposure')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('order')->withType('order.created')->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('exp2')->withType('ab.exposure')->build());
+
+        $claimed = $this->fixture->claimReady(
+            new DateTimeImmutable('2026-06-01 11:59:00'),
+            3,
+            ['ab.exposure'],
+            1,
+        );
+
+        Assert::count($claimed, 1);
+        Assert::same($claimed[0]->getId(), 'exp1');
+        Assert::count($this->fixture->findPending(), 2);
+    }
+
+    public function claimReadyDoesNotReturnNonPendingMessages(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('proc')->withStatus(OutboxStatus::Processing)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pub')->withStatus(OutboxStatus::Published)->build());
+
+        Assert::same($this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3), []);
     }
 
     /**

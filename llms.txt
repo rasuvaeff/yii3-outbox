@@ -16,6 +16,7 @@ composer require rasuvaeff/yii3-outbox
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
 - `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
+- A storage may implement `RetryAwareStorageInterface` (extends `StorageInterface`); `Processor` then claims via `claimReady()` and messages still in backoff are never claimed. Without it, `Processor` falls back to `claim()` and filters in PHP — same result, two writes per backing-off message per iteration.
 - Failed publish keeps message as `Pending` if retries remain; marks `Failed` when exhausted.
 - Every claimed message leaves `Processing`. A message claimed with attempts already spent is marked `Failed` on sight (it can never be retried and nothing else would terminate it).
 - A publisher throwing anything other than `PublishException` is rethrown by `process()`; before that the current message is persisted per the retry policy and the rest of the claimed batch is released back to `Pending`, so nothing is stranded in `Processing`.
@@ -114,6 +115,35 @@ interface StorageInterface
 }
 ```
 
+### RetryAwareStorageInterface
+
+Optional. Implement it when the backend can apply the retry policy inside the
+claim itself. `Processor` detects it with `instanceof` and uses it automatically.
+
+```php
+interface RetryAwareStorageInterface extends StorageInterface
+{
+    // Like claim(), plus: skip messages still waiting for their next attempt.
+    // Take a message when ANY holds:
+    //   attempts >= $maxAttempts            <- mandatory: nothing else can ever
+    //                                          terminate an exhausted message
+    //   lastAttemptAt IS NULL
+    //   lastAttemptAt <= $readyThreshold
+    // $readyThreshold comes from RetryPolicy::readyThreshold($now) — do not
+    // reconstruct the delay inside the backend.
+    public function claimReady(
+        DateTimeImmutable $readyThreshold,
+        int $maxAttempts,
+        array $types = [],
+        int $limit = 1000,
+    ): array;
+}
+```
+
+Implemented by `rasuvaeff/yii3-outbox-db`. Two consequences: `ProcessingResult::$skipped`
+reads `0` (nothing is claimed only to be discarded), and an exhausted message is
+terminated up to `delaySeconds` later than before.
+
 ### PublisherInterface
 
 ```php
@@ -137,6 +167,8 @@ use Rasuvaeff\Yii3Outbox\RetryPolicy;
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
 $policy->shouldRetry($message);             // bool — attempts < maxAttempts?
 $policy->isReadyForRetry($message, $now);   // bool — delay elapsed?
+$policy->readyThreshold($now);              // DateTimeImmutable — now minus delaySeconds;
+                                           // feeds RetryAwareStorageInterface::claimReady()
 ```
 
 ### Processor
@@ -156,7 +188,7 @@ $processor = new Processor(
 $result = $processor->process();
 $result->published; // int
 $result->failed;    // int — publish failures this run plus messages claimed with no attempts left
-$result->skipped;   // int — not ready for retry
+$result->skipped;   // int — claimed but not ready for retry; 0 against a RetryAwareStorageInterface
 $result->total();   // int
 ```
 
