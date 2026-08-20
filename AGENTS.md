@@ -75,7 +75,15 @@ make release-check
   `withAttempt(DateTimeImmutable)` for modifications (both return new instances).
 - `Processor::process()` increments attempts before publishing via `withAttempt($now)`.
 - **Retry flow**: if publish fails and `shouldRetry` returns true → `storage->save($message)`
-  (keeps status `Pending`). Only calls `markFailed` when retries are exhausted.
+  (keeps status `Pending`). Otherwise `markFailed`.
+- **Nothing leaves `process()` in `Processing`, and nothing stays `Pending`
+  without attempts left.** A message claimed with its attempts already spent is
+  failed on sight instead of being saved back as `Pending` (it would circle
+  claim → skip → save forever). A publisher throwing anything other than
+  `PublishException` is rethrown — it is a bug, not a delivery failure — but
+  only after the current message is persisted per the retry policy and the rest
+  of the claimed batch is released. Both invariants are pinned by a property
+  test in `ProcessorTest`; do not "simplify" either branch away.
 - `RetryPolicy::isReadyForRetry()` takes `DateTimeImmutable $now` — caller provides
   the clock, not the policy.
 - **`claim()` is what `Processor::process()` calls, not `findPending()`.** It

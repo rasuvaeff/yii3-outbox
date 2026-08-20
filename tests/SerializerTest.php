@@ -6,11 +6,16 @@ namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use Rasuvaeff\PropertyTesting\ArbitraryInterface;
+use Rasuvaeff\PropertyTesting\Classify;
+use Rasuvaeff\PropertyTesting\Gen;
+use Rasuvaeff\PropertyTesting\Property;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\Serializer;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
@@ -212,6 +217,95 @@ final class SerializerTest
         Expect::exception(InvalidArgumentException::class);
 
         $this->fixture->deserialize($json);
+    }
+
+    #[DataProvider('malformedFieldProvider')]
+    public function rejectsMalformedFieldsWithInvalidArgument(string $field, string $value, string $expectedMessage): void
+    {
+        // Every rejection in this class is an InvalidArgumentException. A
+        // malformed date used to escape as DateMalformedStringException and an
+        // unknown status as a raw ValueError, so a caller catching "bad input"
+        // had to know which field produced it.
+        $decoded = [
+            'id' => 'abc123',
+            'type' => 'order.created',
+            'payload' => '{}',
+            'status' => 'pending',
+            'createdAt' => '2026-01-15 12:30:00',
+            'attempts' => 0,
+        ];
+        $decoded[$field] = $value;
+
+        Expect::exception(InvalidArgumentException::class)->withMessageContaining($expectedMessage);
+
+        $this->fixture->deserialize((string) json_encode($decoded));
+    }
+
+    /** @return iterable<string, array{string, string, string}> */
+    public static function malformedFieldProvider(): iterable
+    {
+        yield 'unparsable createdAt' => ['createdAt', 'not-a-date', 'Field "createdAt" is not a valid datetime'];
+        yield 'empty createdAt' => ['createdAt', '', 'Field "createdAt" is not a valid datetime'];
+        yield 'unparsable lastAttemptAt' => ['lastAttemptAt', 'yesterday-ish', 'Field "lastAttemptAt" is not a valid datetime'];
+        yield 'unknown status' => ['status', 'archived', 'Field "status" has an unknown value "archived"'];
+        yield 'empty status' => ['status', '', 'Field "status" has an unknown value'];
+    }
+
+    /**
+     * Deserialization is the boundary a storage backend hands untrusted rows
+     * to. Whatever the input, it either returns a message or fails with the
+     * one exception type the package documents — never a raw ValueError or
+     * DateMalformedStringException from a field it forgot to guard.
+     */
+    #[Property(runs: 300, timeoutMs: 1000)]
+    public function deserializeEitherReturnsAMessageOrThrowsInvalidArgument(string $data): void
+    {
+        $accepted = false;
+
+        try {
+            $this->fixture->deserialize($data);
+            $accepted = true;
+        } catch (InvalidArgumentException) {
+        }
+
+        Classify::cover($accepted, 'accepted', 5.0);
+        Classify::cover(!$accepted, 'rejected', 20.0);
+
+        Assert::true(true);
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function deserializeEitherReturnsAMessageOrThrowsInvalidArgumentGenerators(): array
+    {
+        $field = static fn(ArbitraryInterface $value): ArbitraryInterface => Gen::frequency([
+            [3, $value],
+            [1, Gen::elements(['', 'not-a-date', '42', 'null'])],
+        ]);
+
+        return [
+            'data' => Gen::frequency([
+                // Well-formed envelopes with individually plausible or corrupt
+                // fields: the paths that reach the date and status parsing.
+                [6, Gen::map(
+                    Gen::record([
+                        'id' => $field(Gen::stringFrom('abcdef0123456789', minLength: 1, maxLength: 12)),
+                        'type' => $field(Gen::elements(['order.created', 'ab.exposure'])),
+                        'payload' => $field(Gen::constant('{}')),
+                        'status' => $field(Gen::elements(['pending', 'processing', 'published', 'failed'])),
+                        'createdAt' => $field(Gen::map(Gen::datetime(), static fn(\DateTimeImmutable $d): string => $d->format(DATE_ATOM))),
+                        'attempts' => Gen::intBetween(0, 5),
+                        'lastAttemptAt' => Gen::nullable(
+                            $field(Gen::map(Gen::datetime(), static fn(\DateTimeImmutable $d): string => $d->format(DATE_ATOM))),
+                        ),
+                    ]),
+                    static fn(array $decoded): string => (string) json_encode($decoded),
+                )],
+                // Arbitrary JSON and arbitrary bytes: the paths that reach the
+                // shape and type guards.
+                [2, Gen::jsonString()],
+                [2, Gen::stringAscii()],
+            ]),
+        ];
     }
 
     public function serializeThrowsWhenPayloadIsNotUtf8(): void

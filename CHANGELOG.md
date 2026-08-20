@@ -1,5 +1,59 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `Processor` no longer strands messages in `Processing`. Only `PublishException`
+  was caught, so anything else a publisher let escape — a transport exception it
+  forgot to wrap, a `TypeError` — left every message the batch had claimed stuck
+  in `Processing` with no API able to move it back. The unexpected exception is
+  still rethrown (it is a bug, not a delivery failure), but the current message
+  is persisted per the retry policy and the rest of the claimed batch is
+  released first
+  ([#18](https://github.com/rasuvaeff/yii3-outbox/issues/18)).
+- A storage failure is no longer reported as a publisher failure. `markPublished()`
+  ran inside the publisher's `try`, so throwing there after a successful
+  `publish()` logged `Outbox publisher threw an unexpected exception` and sent an
+  operator to debug the wrong component. The two calls now have separate
+  handlers; the message still goes back to `Pending` and is published again on a
+  later run, which is the at-least-once behaviour the message id exists to let
+  consumers deduplicate.
+- Releasing an aborted batch no longer swallows the exception that aborted it.
+  `release()` reaches for the same storage that may be the reason the batch
+  failed; its `save()` throwing replaced the original exception and left the
+  remaining messages unreleased. Each message is now released independently and
+  a release failure is logged (`Failed to release a claimed outbox message`,
+  `Failed to persist an outbox message while aborting the batch`) rather than
+  thrown. The invariant is documented for what it is: best-effort, since a
+  storage that is down cannot be told anything.
+- A `Pending` message claimed with its attempts already spent is marked `Failed`
+  instead of being saved back as `Pending`. It could not be retried and nothing
+  else would ever terminate it, so it circled claim → skip → save forever while
+  an alert on `Failed` saw nothing
+  ([#18](https://github.com/rasuvaeff/yii3-outbox/issues/18)).
+- `Serializer::deserialize()` now reports malformed dates and unknown statuses
+  as `InvalidArgumentException` like every other rejection in the class, instead
+  of letting a raw `DateMalformedStringException` or `ValueError` escape. An
+  empty datetime string — a valid "now" for `DateTimeImmutable` — is rejected
+  rather than silently stamping the message with the time it was read
+  ([#18](https://github.com/rasuvaeff/yii3-outbox/issues/18)).
+
+### Added
+
+- A property over the `Processor` batch lifecycle: for any batch, attempt
+  counts, backoff states and publisher behaviour (success, `PublishException`,
+  unexpected exception), no message is left in `Processing` and none is left
+  `Pending` with its attempts spent.
+- A property over `Serializer::deserialize()`: any input either yields a message
+  or fails with `InvalidArgumentException`.
+
+### Changed
+
+- Document `SerializerInterface` as the extension point it is, in both READMEs
+  and `llms.txt`; document what `Processor` guarantees about claimed messages.
+- Raise `rasuvaeff/property-testing-testo` to `^0.6`.
+
 ## 1.3.0 — 2026-07-26
 
 - Document the transactional invariant the pattern rests on: `Outbox::record()`

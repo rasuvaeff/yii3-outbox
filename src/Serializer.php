@@ -85,7 +85,7 @@ final readonly class Serializer implements SerializerInterface
                 throw new InvalidArgumentException('Field "lastAttemptAt" must be a string');
             }
 
-            $lastAttemptAt = new DateTimeImmutable($decoded['lastAttemptAt']);
+            $lastAttemptAt = self::parseDateTime($decoded['lastAttemptAt'], 'lastAttemptAt');
         }
 
         $aggregateId = null;
@@ -98,15 +98,46 @@ final readonly class Serializer implements SerializerInterface
             $aggregateId = $decoded['aggregateId'];
         }
 
+        $status = OutboxStatus::tryFrom($decoded['status']);
+
+        if ($status === null) {
+            throw new InvalidArgumentException(sprintf('Field "status" has an unknown value "%s"', $decoded['status']));
+        }
+
         return new OutboxMessage(
             id: $decoded['id'],
             type: $decoded['type'],
             payload: $decoded['payload'],
-            status: OutboxStatus::from($decoded['status']),
-            createdAt: new DateTimeImmutable($decoded['createdAt']),
+            status: $status,
+            createdAt: self::parseDateTime($decoded['createdAt'], 'createdAt'),
             attempts: $decoded['attempts'],
             lastAttemptAt: $lastAttemptAt,
             aggregateId: $aggregateId,
         );
+    }
+
+    /**
+     * Every other rejection in this class is an `InvalidArgumentException`;
+     * a malformed date would otherwise escape as a raw
+     * {@see \DateMalformedStringException}, forcing a caller that catches
+     * "bad input" to know which field it came from.
+     */
+    private static function parseDateTime(string $value, string $field): DateTimeImmutable
+    {
+        // An empty string is a valid DateTimeImmutable input meaning "now" — a
+        // corrupt row would deserialize into a message stamped with the time it
+        // was read.
+        if ($value === '') {
+            throw new InvalidArgumentException(sprintf('Field "%s" is not a valid datetime', $field));
+        }
+
+        try {
+            return new DateTimeImmutable($value);
+        } catch (\Exception $e) {
+            throw new InvalidArgumentException(
+                sprintf('Field "%s" is not a valid datetime: %s', $field, $value),
+                previous: $e,
+            );
+        }
     }
 }
