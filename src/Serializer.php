@@ -128,7 +128,7 @@ final readonly class Serializer implements SerializerInterface
         // corrupt row would deserialize into a message stamped with the time it
         // was read.
         if ($value === '') {
-            throw new InvalidArgumentException(sprintf('Field "%s" is not a valid datetime: ', $field));
+            throw new InvalidArgumentException(sprintf('Field "%s" is not a valid datetime', $field));
         }
 
         try {
