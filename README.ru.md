@@ -191,6 +191,63 @@ final class DbStorage implements StorageInterface
 }
 ```
 
+### Передача политики повторов в хранилище
+
+`claim()` возвращает любые `Pending`-сообщения, поэтому `Processor` получает и
+те, что ещё ждут окончания backoff, и каждое из них тут же пишет обратно как
+`Pending`. Это две записи на каждое отложенное сообщение за итерацию, и каждое
+занимает слот в `batchSize`, который мог бы достаться готовому к отправке
+сообщению: при большой очереди повторов свежие сообщения ждут за ней.
+
+Хранилище, способное выразить предикат на своём языке запросов, реализует
+`RetryAwareStorageInterface` — `Processor` начинает захватывать через него
+автоматически:
+
+```php
+use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
+
+final class DbStorage implements RetryAwareStorageInterface
+{
+    public function claimReady(
+        DateTimeImmutable $readyThreshold,
+        int $maxAttempts,
+        array $types = [],
+        int $limit = 1000,
+    ): array {
+        // Тот же атомарный захват, что и claim(), плюс одно условие:
+        //   AND (attempts >= :maxAttempts
+        //        OR last_attempt_at IS NULL
+        //        OR last_attempt_at <= :readyThreshold)
+    }
+
+    // ... остальной StorageInterface без изменений
+}
+```
+
+Условие `attempts >= :maxAttempts` — не оптимизация, и выбрасывать его нельзя.
+Сообщение, исчерпавшее попытки, повторить уже нельзя, и единственное, что с ним
+осталось сделать, — пометить `Failed`, а `Processor` может сделать это только с
+тем сообщением, которое хранилище ему отдало. Отфильтруйте его — и завершить
+его не сможет никто: оно навсегда останется `Pending`, невидимое для алерта на
+`Failed`.
+
+`$readyThreshold` приходит из `RetryPolicy::readyThreshold($now)` — задержка
+остаётся делом ядра, и реализация не должна её восстанавливать. Интерфейс
+отдельный от `StorageInterface` потому, что добавление параметра в сам `claim()`
+сломало бы любую стороннюю реализацию.
+
+`rasuvaeff/yii3-outbox-db` его реализует. Хранилище без него по-прежнему
+корректно: `Processor` откатывается на `claim()` и фильтрует в PHP, ровно как
+раньше.
+
+Два следствия, о которых стоит знать до того, как настроите на них алерты:
+
+- `ProcessingResult::$skipped` считает сообщения, которые батч захватил и
+  отбросил. С retry-aware хранилищем таких нет, поэтому там всегда `0` — работа,
+  которую он считал, и есть то, что убирает этот интерфейс.
+- Сообщение с исчерпанными попытками завершается на величину до `delaySeconds`
+  позже, чем раньше: теперь оно ждёт батча, в который попадёт.
+
 ### Реализация паблишера
 
 ```php
@@ -232,7 +289,8 @@ $processor = new Processor(
 $result = $processor->process();
 // $result->published — successfully published
 // $result->failed   — сбои публикации и сообщения с исчерпанными попытками
-// $result->skipped  — ещё не готовы к повтору (задержка не истекла)
+// $result->skipped  — захвачены, но не готовы к повтору; всегда 0 с
+//                     RetryAwareStorageInterface, который их не захватывает
 ```
 
 ### Поведение повторов
@@ -274,8 +332,10 @@ storage, который, вполне возможно, и уронил батч
 ```php
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
 
-$policy->shouldRetry($message);          // bool — attempts remaining?
+$policy->shouldRetry($message);           // bool — attempts remaining?
 $policy->isReadyForRetry($message, $now); // bool — delay elapsed?
+$policy->readyThreshold($now);            // DateTimeImmutable — тот же вопрос
+                                          // как граница для фильтра в хранилище
 ```
 
 ### Использование InMemoryStorage в тестах
@@ -316,6 +376,16 @@ $storage->clear();
 вызывающему, наборы типов независимых потребителей не должны пересекаться,
 иначе сообщение дойдёт только до того воркера, который захватил его первым.
 
+### RetryAwareStorageInterface
+
+Расширяет `StorageInterface`. Опционален: реализуется, когда бэкенд умеет
+применять политику повторов прямо внутри захвата — см.
+[Передача политики повторов в хранилище](#передача-политики-повторов-в-хранилище).
+
+| Метод | Описание |
+|---|---|
+| `claimReady(readyThreshold, maxAttempts, types = [], limit = 1000)` | Как `claim()`, но пропускает сообщения, ещё ждущие следующей попытки. Берёт сообщение, если оно ни разу не отправлялось, последняя попытка была в `readyThreshold` или раньше, либо попытки уже исчерпаны (`maxAttempts`) |
+
 ### OutboxMessage
 
 | Метод | Описание |
@@ -355,6 +425,7 @@ $storage->clear();
 | `__construct(maxAttempts, delaySeconds)` | По умолчанию: 3 попытки, задержка 60 с |
 | `shouldRetry(message)` | Проверяет количество попыток |
 | `isReadyForRetry(message, now)` | Проверяет попытки + истечение задержки |
+| `readyThreshold(now)` | `now - delaySeconds`: та же проверка в виде границы, по которой может фильтровать хранилище. Питает `RetryAwareStorageInterface::claimReady()` |
 
 ### Processor
 
@@ -369,7 +440,7 @@ $storage->clear();
 |---|---|
 | `$published` | Количество успешно опубликованных сообщений |
 | `$failed` | Количество сбоев публикации в этом запуске плюс сообщения, заклеймленные с исчерпанными попытками |
-| `$skipped` | Количество сообщений, не готовых к повтору |
+| `$skipped` | Количество захваченных сообщений, не готовых к повтору. `0` с `RetryAwareStorageInterface`, который их не захватывает |
 | `total()` | Сумма всех счётчиков |
 
 ### Serializer

@@ -19,10 +19,11 @@ Public API:
   markFailed, getById)
 - `PublisherInterface` — publishing contract
 - `PublishException` — thrown on publish failure
-- `RetryPolicy` — configurable max attempts and delay
+- `RetryPolicy` — configurable max attempts and delay, plus `readyThreshold()`
+- `RetryAwareStorageInterface` — optional `StorageInterface` extension: `claimReady()`
 - `Processor` — fetches pending messages and publishes them, returns `ProcessingResult`
 - `ProcessingResult` — published/failed/skipped counters
-- `InMemoryStorage` — test implementation of `StorageInterface`
+- `InMemoryStorage` — test implementation of `RetryAwareStorageInterface`
 
 DB storage is a separate package: `rasuvaeff/yii3-outbox-db`.
 
@@ -86,6 +87,28 @@ make release-check
   test in `ProcessorTest`; do not "simplify" either branch away.
 - `RetryPolicy::isReadyForRetry()` takes `DateTimeImmutable $now` — caller provides
   the clock, not the policy.
+- **`claimReady()` must keep taking exhausted messages.** The readiness
+  pushdown (`RetryAwareStorageInterface`) exists to stop claiming messages that
+  are still in backoff, but a message whose attempts are spent has to keep
+  arriving: only `markFailed()` terminates it, and `Processor` can only fail a
+  message the storage handed it. Drop the `attempts >= maxAttempts` disjunct
+  and those rows stay `Pending` forever with no alert on `Failed` firing —
+  the same trap the 1.4.0 claim → skip → save fix closed, one layer down.
+  `RetryPolicy::readyThreshold()` is the single source of the boundary; a
+  backend must never rebuild it from `delaySeconds`.
+- **The pushdown assumes a fixed delay.** `readyThreshold()` collapses the
+  whole policy into one instant, which only works because the delay does not
+  depend on the attempt count. If `RetryPolicy` ever grows exponential backoff,
+  one threshold cannot express the predicate: either the backend computes the
+  delay per row from `attempts`, or `claimReady()` stops being usable and
+  `Processor` goes back to filtering in PHP. Do not add a growing delay without
+  deciding which.
+- **`ProcessingResult::$skipped` is `0` against a retry-aware storage.** It
+  counts messages the batch claimed and then discarded, and the point of the
+  pushdown is that there are none. A test asserting a non-zero `skipped` is
+  asserting the fallback path — use a plain `StorageInterface` double
+  (`FailingStorage`) for it, not `InMemoryStorage`, which implements
+  `RetryAwareStorageInterface`.
 - **`claim()` is what `Processor::process()` calls, not `findPending()`.** It
   must atomically move up to `$limit` `Pending` messages to `Processing` and
   return them, so concurrent workers never receive the same message. Every
@@ -102,7 +125,8 @@ make release-check
   Since `claim()` hands a message to exactly one caller, their type sets must not
   overlap, or an overlapping message reaches only the first claimer.
 - `InMemoryStorage` does not persist between requests — test use only. It
-  implements `Countable` and `IteratorAggregate` alongside `StorageInterface`.
+  implements `Countable` and `IteratorAggregate` alongside
+  `RetryAwareStorageInterface`.
 - `Outbox` and `Processor` require `Psr\Clock\ClockInterface` injection.
 - **Message id: domain id first, generator second.** `record(id: ...)` skips the
   generator entirely — that is the path that keeps republished domain events

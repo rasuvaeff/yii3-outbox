@@ -188,6 +188,61 @@ final class DbStorage implements StorageInterface
 }
 ```
 
+### Letting the storage apply the retry policy
+
+`claim()` returns every `Pending` message, so `Processor` receives the ones
+still waiting out their backoff and writes each of them straight back as
+`Pending`. That is two writes per backing-off message per iteration, and each
+one occupies a slot in `batchSize` that a message ready to go could have used —
+with a large retry queue, fresh messages wait behind it.
+
+A storage that can express the predicate in its own query language implements
+`RetryAwareStorageInterface`, and `Processor` claims through it automatically:
+
+```php
+use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
+
+final class DbStorage implements RetryAwareStorageInterface
+{
+    public function claimReady(
+        DateTimeImmutable $readyThreshold,
+        int $maxAttempts,
+        array $types = [],
+        int $limit = 1000,
+    ): array {
+        // Same atomic claim as claim(), with one more condition:
+        //   AND (attempts >= :maxAttempts
+        //        OR last_attempt_at IS NULL
+        //        OR last_attempt_at <= :readyThreshold)
+    }
+
+    // ... the rest of StorageInterface unchanged
+}
+```
+
+The `attempts >= :maxAttempts` clause is not an optimisation and must not be
+dropped. A message out of attempts cannot be retried, and the only thing left to
+do with it is mark it `Failed` — which `Processor` can only do to a message the
+storage handed it. Filter it out and nothing ever terminates it: it stays
+`Pending`, invisible to an alert watching `Failed`, forever.
+
+`$readyThreshold` comes from `RetryPolicy::readyThreshold($now)` — the delay is
+the core's business, and an implementation must not reconstruct it. The
+interface exists separately from `StorageInterface` because adding the parameter
+to `claim()` itself would break every third-party implementation.
+
+`rasuvaeff/yii3-outbox-db` implements it. A storage that does not is still
+correct: `Processor` falls back to `claim()` and filters in PHP, exactly as
+before.
+
+Two consequences worth knowing before you alert on them:
+
+- `ProcessingResult::$skipped` counts messages the batch claimed and discarded.
+  Against a retry-aware storage there are none, so it reads `0` — the work it
+  used to count is what this interface removes.
+- A message whose attempts are spent is terminated up to `delaySeconds` later
+  than before, since it now waits for a batch that includes it.
+
 ### Implementing a publisher
 
 ```php
@@ -229,7 +284,8 @@ $processor = new Processor(
 $result = $processor->process();
 // $result->published — successfully published
 // $result->failed   — publish failures and messages that ran out of attempts
-// $result->skipped  — not yet ready for retry (backoff has not elapsed)
+// $result->skipped  — claimed but not yet ready for retry; always 0 against
+//                     a RetryAwareStorageInterface, which never claims them
 ```
 
 ### Retry behaviour
@@ -271,8 +327,10 @@ raised while reacting to it.
 ```php
 $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
 
-$policy->shouldRetry($message);          // bool — attempts remaining?
+$policy->shouldRetry($message);           // bool — attempts remaining?
 $policy->isReadyForRetry($message, $now); // bool — delay elapsed?
+$policy->readyThreshold($now);            // DateTimeImmutable — the same question
+                                          // as a boundary a storage can filter on
 ```
 
 ### Using InMemoryStorage for tests
@@ -313,6 +371,16 @@ share one outbox. Since `claim()` hands a message to exactly one caller, the
 type sets of independent consumers must not overlap — otherwise each message
 reaches only whichever worker claimed it first.
 
+### RetryAwareStorageInterface
+
+Extends `StorageInterface`. Optional: implement it when the backend can apply
+the retry policy inside the claim itself — see
+[Letting the storage apply the retry policy](#letting-the-storage-apply-the-retry-policy).
+
+| Method | Description |
+|---|---|
+| `claimReady(readyThreshold, maxAttempts, types = [], limit = 1000)` | Like `claim()`, but skips messages still waiting for their next attempt. Takes a message when it has never been attempted, was last attempted at or before `readyThreshold`, or has already spent `maxAttempts` attempts |
+
 ### OutboxMessage
 
 | Method | Description |
@@ -352,6 +420,7 @@ reaches only whichever worker claimed it first.
 | `__construct(maxAttempts, delaySeconds)` | Default: 3 attempts, 60s delay |
 | `shouldRetry(message)` | Checks attempt count |
 | `isReadyForRetry(message, now)` | Checks attempts + delay elapsed |
+| `readyThreshold(now)` | `now - delaySeconds`: the same check as a boundary a storage can filter on. Feeds `RetryAwareStorageInterface::claimReady()` |
 
 ### Processor
 
@@ -366,7 +435,7 @@ reaches only whichever worker claimed it first.
 |---|---|
 | `$published` | Count of successfully published messages |
 | `$failed` | Count of publish failures this run, plus messages claimed with no attempts left |
-| `$skipped` | Count of messages not ready for retry |
+| `$skipped` | Count of claimed messages not ready for retry. `0` against a `RetryAwareStorageInterface`, which never claims them |
 | `total()` | Sum of all counters |
 
 ### Serializer

@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `RetryAwareStorageInterface`, an optional extension of `StorageInterface` that
+  a backend implements when it can apply the retry policy inside the claim
+  itself, and `RetryPolicy::readyThreshold()`, which turns the per-message
+  `isReadyForRetry()` check into the boundary such a backend filters on.
+  `Processor` detects the interface and claims through `claimReady()`; a storage
+  without it keeps working unchanged
+  ([#20](https://github.com/rasuvaeff/yii3-outbox/issues/20)).
+
+  Until now every `Pending` message was claimed and the ones still waiting out
+  their backoff were written straight back as `Pending` — two writes per
+  backing-off message per worker iteration, each occupying a slot in `batchSize`
+  that a ready message could have used, so delivery latency grew with the size
+  of the retry queue. `rasuvaeff/yii3-outbox-db` implements the interface; a
+  hand-written storage does not have to.
+
+  An implementation must keep claiming messages whose attempts are spent, in or
+  out of the backoff window: only `markFailed()` terminates one, and `Processor`
+  can only fail a message it was given. That is what the `maxAttempts` argument
+  is for, and dropping it strands those rows as `Pending` forever.
+
+### Changed
+
+- `ProcessingResult::$skipped` reads `0` against a retry-aware storage. It
+  counts messages a batch claimed and then discarded, and the pushdown means
+  there are none — the work it used to count is what this release removes. A
+  dashboard or alert reading `$skipped` as "how many are backing off" was
+  already measuring wasted effort rather than queue depth, and now measures
+  nothing; count `Pending` rows with a future retry time instead.
+- A message that arrives with no attempts left is terminated up to
+  `delaySeconds` later than before, since it now waits for a batch that
+  includes it.
+- `Processor::process()` reads the clock before claiming rather than after, so
+  one instant serves both the threshold it sends to the storage and the
+  per-message check it runs on the result — the two cannot disagree about what
+  "now" is. With a slow claim query `lastAttemptAt` is stamped marginally
+  earlier than the attempt itself, which makes the next retry marginally
+  earlier too.
+- `InMemoryStorage` implements `RetryAwareStorageInterface`.
+
 ## 1.4.0 — 2026-08-20
 
 ### Fixed

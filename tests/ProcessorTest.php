@@ -516,9 +516,10 @@ final class ProcessorTest
 
     public function skipsWhenDelayNotElapsed(): void
     {
+        $storage = new FailingStorage();
         $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
         $processor = new Processor(
-            storage: $this->storage,
+            storage: $storage,
             publisher: $this->publisher,
             retryPolicy: $policy,
             clock: $this->clock,
@@ -531,13 +532,141 @@ final class ProcessorTest
             ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30'))
             ->build();
 
-        $this->storage->save($message);
+        $storage->save($message);
 
         $result = $processor->process();
 
+        // FailingStorage is a plain StorageInterface, so the batch arrives
+        // unfiltered and the loop is what discards this message.
         Assert::same($result->published, 0);
         Assert::same($result->skipped, 1);
-        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    /**
+     * What #20 was about: a message waiting out its backoff used to be claimed
+     * and then written straight back as `Pending` — two writes and one wasted
+     * slot in the batch, every iteration, for every backing-off message.
+     */
+    public function doesNotClaimMessagesStillWaitingOutTheirBackoff(): void
+    {
+        $storage = new RecordingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 60),
+            clock: $this->clock,
+        );
+
+        $storage->seed(
+            OutboxMessageBuilder::create()
+                ->withId('backing-off')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(1)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30'))
+                ->build(),
+        );
+
+        $result = $processor->process();
+
+        Assert::same($storage->claimReadyCalls, 1);
+        Assert::same($storage->claimCalls, 0);
+        Assert::same($storage->saves, 0);
+        Assert::same($result->skipped, 0);
+        Assert::same($result->published, 0);
+        Assert::same($storage->getById('backing-off')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($storage->getById('backing-off')?->getAttempts(), 1);
+    }
+
+    /**
+     * The readiness pushdown must not hide an exhausted message. Nothing but
+     * `markFailed()` can terminate one, and the caller can only fail a message
+     * the storage handed it — so a message out of attempts stays claimable
+     * whether or not its backoff has elapsed.
+     */
+    public function claimsExhaustedMessagesInsideTheBackoffWindow(): void
+    {
+        $storage = new RecordingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 60),
+            clock: $this->clock,
+        );
+
+        $storage->seed(
+            OutboxMessageBuilder::create()
+                ->withId('exhausted')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(3)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:59'))
+                ->build(),
+        );
+
+        $result = $processor->process();
+
+        Assert::same($result->failed, 1);
+        Assert::same($storage->getById('exhausted')?->getStatus(), OutboxStatus::Failed);
+    }
+
+    /**
+     * On the fallback path the loop must keep going past a message that is not
+     * ready: it is one entry in a batch, not the end of one.
+     */
+    public function plainStorageBatchContinuesPastANotReadyMessage(): void
+    {
+        $storage = new FailingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 60),
+            clock: $this->clock,
+        );
+
+        $storage->save(
+            OutboxMessageBuilder::create()
+                ->withId('not-ready')
+                ->withStatus(OutboxStatus::Pending)
+                ->withAttempts(1)
+                ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:59:30'))
+                ->build(),
+        );
+        $storage->save(
+            OutboxMessageBuilder::create()
+                ->withId('ready')
+                ->withStatus(OutboxStatus::Pending)
+                ->build(),
+        );
+
+        $result = $processor->process();
+
+        Assert::same($result->skipped, 1);
+        Assert::same($result->published, 1);
+        Assert::same($storage->getById('ready')?->getStatus(), OutboxStatus::Published);
+        Assert::same($storage->getById('not-ready')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    public function fallsBackToPlainClaimWhenStorageIsNotRetryAware(): void
+    {
+        $storage = new FailingStorage();
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+        );
+
+        $storage->save(
+            OutboxMessageBuilder::create()
+                ->withId('msg-1')
+                ->withStatus(OutboxStatus::Pending)
+                ->build(),
+        );
+
+        $result = $processor->process();
+
+        Assert::same($result->published, 1);
+        Assert::same($storage->getById('msg-1')?->getStatus(), OutboxStatus::Published);
     }
 
     public function respectsBatchSize(): void
@@ -664,8 +793,10 @@ final class ProcessorTest
 
         $result = $processor->process();
 
+        // InMemoryStorage is retry-aware, so 'not-ready' never enters the
+        // batch at all — hence a skipped count of zero rather than one.
         Assert::same($result->published, 1);
-        Assert::same($result->skipped, 1);
+        Assert::same($result->skipped, 0);
         Assert::same($this->storage->getById('ready')?->getStatus(), OutboxStatus::Published);
         Assert::notSame($this->storage->getById('not-ready')?->getStatus(), OutboxStatus::Published);
     }
@@ -708,12 +839,25 @@ final class ProcessorTest
             clock: new StubClock($now),
         );
 
+        // Exactly the messages the readiness pushdown lets through: never
+        // attempted, past their backoff, or out of attempts. The rest are not
+        // in the batch at all, which is the point of #20 — they used to be
+        // claimed and written straight back.
+        $claimable = 0;
+
+        foreach ($specs as $spec) {
+            if ($spec['attempts'] === 0 || $spec['attempts'] >= $maxAttempts || $spec['dueOffset'] >= 30) {
+                $claimable++;
+            }
+        }
+
         $threw = false;
 
         try {
             $result = $processor->process();
 
-            Assert::same($result->total(), \count($specs));
+            Assert::same($result->total(), $claimable);
+            Assert::same($result->skipped, 0);
         } catch (\RuntimeException) {
             $threw = true;
         }

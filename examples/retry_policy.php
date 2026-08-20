@@ -49,3 +49,7 @@ $exhausted = new \Rasuvaeff\Yii3Outbox\OutboxMessage(
     lastAttemptAt: new DateTimeImmutable('-120 seconds'),
 );
 echo "Exhausted — should retry: " . ($policy->shouldRetry($exhausted) ? 'yes' : 'no') . "\n";
+
+echo "\nThe same question as a boundary a storage can filter on:\n";
+echo '  readyThreshold(now) = ' . $policy->readyThreshold($now)->format('Y-m-d H:i:s') . "\n";
+echo "  a message last attempted at or before that instant is ready\n";

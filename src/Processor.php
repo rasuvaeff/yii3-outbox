@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Rasuvaeff\Yii3Outbox;
 
+use DateTimeImmutable;
 use InvalidArgumentException;
 use Psr\Clock\ClockInterface;
 use Psr\Log\LoggerInterface;
@@ -49,11 +50,11 @@ final readonly class Processor
      */
     public function process(): ProcessingResult
     {
-        $messages = $this->storage->claim(limit: $this->batchSize);
+        $now = $this->clock->now();
+        $messages = $this->claimBatch($now);
         $published = 0;
         $failed = 0;
         $skipped = 0;
-        $now = $this->clock->now();
 
         foreach ($messages as $index => $message) {
             try {
@@ -146,6 +147,31 @@ final readonly class Processor
             failed: $failed,
             skipped: $skipped,
         );
+    }
+
+    /**
+     * Claims a batch, letting the storage apply the retry policy itself when it
+     * can.
+     *
+     * The `isReadyForRetry()` check in the loop above stays either way. It is
+     * not redundant with the pushdown: a plain {@see StorageInterface} has no
+     * way to honour it, and one that does may still hand back more than asked —
+     * time moves between the query and this loop. The pushdown removes work; it
+     * is not what makes the result correct.
+     *
+     * @return list<OutboxMessage>
+     */
+    private function claimBatch(DateTimeImmutable $now): array
+    {
+        if ($this->storage instanceof RetryAwareStorageInterface) {
+            return $this->storage->claimReady(
+                readyThreshold: $this->retryPolicy->readyThreshold($now),
+                maxAttempts: $this->retryPolicy->getMaxAttempts(),
+                limit: $this->batchSize,
+            );
+        }
+
+        return $this->storage->claim(limit: $this->batchSize);
     }
 
     /**

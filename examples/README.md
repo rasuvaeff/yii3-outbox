@@ -5,3 +5,4 @@
 | `basic_usage.php` | Creating messages, processing outbox | No |
 | `custom_storage.php` | Implementing StorageInterface | No |
 | `retry_policy.php` | Configuring retry behavior | No |
+| `retry_aware_storage.php` | Letting the storage skip messages still in backoff | No |
