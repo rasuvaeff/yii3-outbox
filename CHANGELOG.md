@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Tests build their doubles with `rasuvaeff/understudy-testo` instead of
+  hand-written fake classes: `SpyLogger`, `StubPublisher`, `StubClock`,
+  `FixedIdGenerator`, `FailingStorage` and `RecordingStorage` are gone. The
+  storage decorators became `Understudy::delegate()` doubles over the real
+  `InMemoryStorage` (a configured `throws()` wins, everything else forwards and
+  is recorded), the publisher's `$publishedIds`/`$lastPublished` counters read
+  the call log, and the logger assertions claim their counts with
+  `verify(..., times:)`. Rector catches up with its current rule set in `src/`
+  and the tests. Dev-dependency only; the public contract is untouched.
+
 ## 1.5.0 — 2026-08-20
 
 ### Added

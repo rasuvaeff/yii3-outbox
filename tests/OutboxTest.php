@@ -5,7 +5,10 @@ declare(strict_types=1);
 namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
+use Psr\Clock\ClockInterface;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
+use Rasuvaeff\Yii3Outbox\MessageIdGeneratorInterface;
 use Rasuvaeff\Yii3Outbox\Outbox;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Testo\Assert;
@@ -13,23 +16,42 @@ use Testo\Codecov\Covers;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
+use function Rasuvaeff\Understudy\verify;
+use function Rasuvaeff\Understudy\when;
+
 #[Test]
 #[Covers(Outbox::class)]
 final class OutboxTest
 {
     private InMemoryStorage $storage;
-    private StubClock $clock;
+    private ClockInterface $clock;
     private Outbox $outbox;
 
     #[BeforeTest]
     public function setUp(): void
     {
         $this->storage = new InMemoryStorage();
-        $this->clock = new StubClock(new DateTimeImmutable('2026-06-01 10:00:00'));
+        $this->clock = $this->fixedClock('2026-06-01 10:00:00');
         $this->outbox = new Outbox(
             storage: $this->storage,
             clock: $this->clock,
         );
+    }
+
+    private function fixedClock(string $now): ClockInterface
+    {
+        $clock = Understudy::for(ClockInterface::class);
+        when(fn() => $clock->now())->returns(new DateTimeImmutable($now));
+
+        return $clock;
+    }
+
+    private function idGenerator(string $id): MessageIdGeneratorInterface
+    {
+        $generator = Understudy::for(MessageIdGeneratorInterface::class);
+        when(fn() => $generator->generate())->returns($id);
+
+        return $generator;
     }
 
     public function defaultIdFormatIsUnchanged(): void
@@ -44,7 +66,7 @@ final class OutboxTest
         $outbox = new Outbox(
             storage: $this->storage,
             clock: $this->clock,
-            idGenerator: new FixedIdGenerator('generated-id'),
+            idGenerator: $this->idGenerator('generated-id'),
         );
 
         Assert::same($outbox->record(type: 'order.created', payload: '{}')->getId(), 'generated-id');
@@ -54,13 +76,13 @@ final class OutboxTest
     {
         // republishing the same domain event must not mint a second id, or the
         // receiver has nothing stable to deduplicate on
-        $generator = new FixedIdGenerator('generated-id');
+        $generator = $this->idGenerator('generated-id');
         $outbox = new Outbox(storage: $this->storage, clock: $this->clock, idGenerator: $generator);
 
         $message = $outbox->record(type: 'order.created', payload: '{}', id: 'order-created-42');
 
         Assert::same($message->getId(), 'order-created-42');
-        Assert::same($generator->calls, 0);
+        verify(fn() => $generator->generate(), never: true);
     }
 
     public function recordSavesMessageAndReturnsIt(): void
