@@ -107,8 +107,9 @@ make release-check
   counts messages the batch claimed and then discarded, and the point of the
   pushdown is that there are none. A test asserting a non-zero `skipped` is
   asserting the fallback path — use a plain `StorageInterface` double
-  (`FailingStorage`) for it, not `InMemoryStorage`, which implements
-  `RetryAwareStorageInterface`.
+  (`Understudy::delegate(StorageInterface::class, new InMemoryStorage())` in
+  `ProcessorTest::plainStorage()`) for it, not `InMemoryStorage` directly,
+  which implements `RetryAwareStorageInterface`.
 - **`claim()` is what `Processor::process()` calls, not `findPending()`.** It
   must atomically move up to `$limit` `Pending` messages to `Processing` and
   return them, so concurrent workers never receive the same message. Every

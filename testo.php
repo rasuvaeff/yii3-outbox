@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Rasuvaeff\Understudy\Testo\UnderstudyPlugin;
 use Testo\Application\Config\ApplicationConfig;
 use Testo\Application\Config\FinderConfig;
 use Testo\Application\Config\SuiteConfig;
@@ -13,6 +14,7 @@ return new ApplicationConfig(
         new SuiteConfig(
             name: 'Unit',
             location: new FinderConfig(include: ['tests']),
+            plugins: [new UnderstudyPlugin()],
         ),
         new SuiteConfig(
             name: 'Benchmarks',

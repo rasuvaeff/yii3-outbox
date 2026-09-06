@@ -85,7 +85,7 @@ final readonly class Serializer implements SerializerInterface
                 throw new InvalidArgumentException('Field "lastAttemptAt" must be a string');
             }
 
-            $lastAttemptAt = self::parseDateTime($decoded['lastAttemptAt'], 'lastAttemptAt');
+            $lastAttemptAt = $this->parseDateTime($decoded['lastAttemptAt'], 'lastAttemptAt');
         }
 
         $aggregateId = null;
@@ -109,7 +109,7 @@ final readonly class Serializer implements SerializerInterface
             type: $decoded['type'],
             payload: $decoded['payload'],
             status: $status,
-            createdAt: self::parseDateTime($decoded['createdAt'], 'createdAt'),
+            createdAt: $this->parseDateTime($decoded['createdAt'], 'createdAt'),
             attempts: $decoded['attempts'],
             lastAttemptAt: $lastAttemptAt,
             aggregateId: $aggregateId,
@@ -122,7 +122,7 @@ final readonly class Serializer implements SerializerInterface
      * {@see \DateMalformedStringException}, forcing a caller that catches
      * "bad input" to know which field it came from.
      */
-    private static function parseDateTime(string $value, string $field): DateTimeImmutable
+    private function parseDateTime(string $value, string $field): DateTimeImmutable
     {
         // An empty string is a valid DateTimeImmutable input meaning "now" — a
         // corrupt row would deserialize into a message stamped with the time it
@@ -134,10 +134,7 @@ final readonly class Serializer implements SerializerInterface
         try {
             return new DateTimeImmutable($value);
         } catch (\Exception $e) {
-            throw new InvalidArgumentException(
-                sprintf('Field "%s" is not a valid datetime: %s', $field, $value),
-                previous: $e,
-            );
+            throw new InvalidArgumentException(sprintf('Field "%s" is not a valid datetime: %s', $field, $value), (int) $e->getCode(), previous: $e);
         }
     }
 }

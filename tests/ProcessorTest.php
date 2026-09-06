@@ -6,20 +6,33 @@ namespace Rasuvaeff\Yii3Outbox\Tests;
 
 use DateTimeImmutable;
 use InvalidArgumentException;
+use Psr\Clock\ClockInterface;
+use Psr\Log\LoggerInterface;
 use Rasuvaeff\PropertyTesting\ArbitraryInterface;
 use Rasuvaeff\PropertyTesting\Classify;
 use Rasuvaeff\PropertyTesting\Gen;
 use Rasuvaeff\PropertyTesting\Property;
+use Rasuvaeff\Understudy\Arg;
+use Rasuvaeff\Understudy\Captor;
+use Rasuvaeff\Understudy\Invocation;
+use Rasuvaeff\Understudy\Understudy;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 use Rasuvaeff\Yii3Outbox\ProcessingResult;
 use Rasuvaeff\Yii3Outbox\Processor;
+use Rasuvaeff\Yii3Outbox\PublisherInterface;
+use Rasuvaeff\Yii3Outbox\PublishException;
+use Rasuvaeff\Yii3Outbox\RetryAwareStorageInterface;
 use Rasuvaeff\Yii3Outbox\RetryPolicy;
+use Rasuvaeff\Yii3Outbox\StorageInterface;
 use Testo\Assert;
 use Testo\Codecov\Covers;
 use Testo\Expect;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
+
+use function Rasuvaeff\Understudy\verify;
+use function Rasuvaeff\Understudy\when;
 
 #[Test]
 #[Covers(Processor::class)]
@@ -28,21 +41,99 @@ final class ProcessorTest
 {
     private InMemoryStorage $storage;
     private Processor $processor;
-    private StubPublisher $publisher;
-    private StubClock $clock;
+    private PublisherInterface $publisher;
+    private ClockInterface $clock;
 
     #[BeforeTest]
     public function setUp(): void
     {
         $this->storage = new InMemoryStorage();
-        $this->publisher = new StubPublisher();
-        $this->clock = new StubClock(new DateTimeImmutable('2026-06-01 12:00:00'));
+        $this->publisher = Understudy::for(PublisherInterface::class);
+        $this->clock = $this->fixedClock('2026-06-01 12:00:00');
         $this->processor = new Processor(
             storage: $this->storage,
             publisher: $this->publisher,
             retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
             clock: $this->clock,
         );
+    }
+
+    private Captor $warningMessages;
+
+    private Captor $warningContexts;
+
+    private Captor $errorMessages;
+
+    private Captor $errorContexts;
+
+    private function logger(): LoggerInterface
+    {
+        $logger = Understudy::for(LoggerInterface::class);
+        $this->warningMessages = Arg::captor();
+        $this->warningContexts = Arg::captor();
+        $this->errorMessages = Arg::captor();
+        $this->errorContexts = Arg::captor();
+
+        when(fn() => $logger->warning($this->warningMessages->capture(), $this->warningContexts->capture()));
+        when(fn() => $logger->error($this->errorMessages->capture(), $this->errorContexts->capture()));
+
+        return $logger;
+    }
+
+    private function fixedClock(string $now): ClockInterface
+    {
+        $clock = Understudy::for(ClockInterface::class);
+        when(fn() => $clock->now())->returns(new DateTimeImmutable($now));
+
+        return $clock;
+    }
+
+    private function failEveryPublish(): void
+    {
+        when(fn() => $this->publisher->publish(Arg::any()))
+            ->answers(
+                fn(Invocation $call) => throw new PublishException(
+                    message: 'Publish failed',
+                    outboxMessage: $call->args[0],
+                ),
+            );
+    }
+
+    private function throwOnEveryPublish(\Throwable $exception): void
+    {
+        when(fn() => $this->publisher->publish(Arg::any()))
+            ->throws($exception);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function publishedIds(): array
+    {
+        return array_map(
+            static fn(Invocation $call): string => $call->args[0]->getId(),
+            Understudy::calls(fn() => $this->publisher->publish(Arg::any())),
+        );
+    }
+
+    /**
+     * @return array{0: StorageInterface, 1: InMemoryStorage}
+     */
+    private function plainStorage(): array
+    {
+        $inner = new InMemoryStorage();
+
+        return [Understudy::delegate(StorageInterface::class, $inner), $inner];
+    }
+
+    /**
+     * @return array{0: RetryAwareStorageInterface, 1: InMemoryStorage}
+     */
+    private function retryAwareStorage(): array
+    {
+        $inner = new InMemoryStorage();
+
+        return [Understudy::delegate(RetryAwareStorageInterface::class, $inner), $inner];
     }
 
     public function publishesPendingMessage(): void
@@ -60,7 +151,7 @@ final class ProcessorTest
         Assert::same($result->failed, 0);
         Assert::same($result->skipped, 0);
         Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Published);
-        Assert::same($this->publisher->lastPublished?->getId(), 'msg-1');
+        Assert::same($this->publishedIds(), ['msg-1']);
     }
 
     public function publishesMultiplePendingMessages(): void
@@ -82,7 +173,7 @@ final class ProcessorTest
 
     public function keepsAsPendingWhenPublishFailsButRetriesRemain(): void
     {
-        $this->publisher->shouldFail = true;
+        $this->failEveryPublish();
 
         $message = OutboxMessageBuilder::create()
             ->withId('msg-1')
@@ -107,7 +198,7 @@ final class ProcessorTest
             clock: $this->clock,
         );
 
-        $this->publisher->shouldFail = true;
+        $this->failEveryPublish();
 
         $message = OutboxMessageBuilder::create()
             ->withId('msg-1')
@@ -124,7 +215,7 @@ final class ProcessorTest
 
     public function logsWarningOnPublishFailure(): void
     {
-        $this->publisher->shouldFail = true;
+        $this->failEveryPublish();
 
         $message = OutboxMessageBuilder::create()
             ->withId('msg-1')
@@ -133,7 +224,7 @@ final class ProcessorTest
 
         $this->storage->save($message);
 
-        $logger = new SpyLogger();
+        $logger = $this->logger();
 
         $processor = new Processor(
             storage: $this->storage,
@@ -145,10 +236,10 @@ final class ProcessorTest
 
         $processor->process();
 
-        Assert::true($logger->warningCalled);
-        Assert::same($logger->warningContext['messageId'], 'msg-1');
-        Assert::same($logger->warningContext['attempts'], 1);
-        Assert::same($logger->warningContext['error'], 'Publish failed');
+        verify(fn() => $logger->warning(Arg::any(), Arg::any()), times: 1);
+        Assert::same($this->warningContexts->last()['messageId'], 'msg-1');
+        Assert::same($this->warningContexts->last()['attempts'], 1);
+        Assert::same($this->warningContexts->last()['error'], 'Publish failed');
     }
 
     public function skipsAlreadyPublished(): void
@@ -194,12 +285,12 @@ final class ProcessorTest
         $stored = $this->storage->getById('msg-1');
         Assert::notNull($stored);
         Assert::same($stored->getStatus(), OutboxStatus::Failed);
-        Assert::same($this->publisher->publishedIds, []);
+        Assert::same($this->publishedIds(), []);
     }
 
     public function logsTheExhaustedRetriesWarning(): void
     {
-        $logger = new SpyLogger();
+        $logger = $this->logger();
         $processor = new Processor(
             storage: $this->storage,
             publisher: $this->publisher,
@@ -218,16 +309,13 @@ final class ProcessorTest
 
         $processor->process();
 
-        Assert::same($logger->records, [[
-            'level' => 'warning',
-            'message' => 'Outbox message exhausted its retries',
-            'context' => ['messageId' => 'msg-1', 'attempts' => 1],
-        ]]);
+        Assert::same($this->warningMessages->all(), ['Outbox message exhausted its retries']);
+        Assert::same($this->warningContexts->all(), [['messageId' => 'msg-1', 'attempts' => 1]]);
     }
 
     public function logsTheUnexpectedExceptionWithItsClass(): void
     {
-        $logger = new SpyLogger();
+        $logger = $this->logger();
         $processor = new Processor(
             storage: $this->storage,
             publisher: $this->publisher,
@@ -235,7 +323,7 @@ final class ProcessorTest
             clock: $this->clock,
             logger: $logger,
         );
-        $this->publisher->throwUnexpected = new \RuntimeException('connection reset');
+        $this->throwOnEveryPublish(new \RuntimeException('connection reset'));
 
         $this->storage->save(
             OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build(),
@@ -246,15 +334,12 @@ final class ProcessorTest
         } catch (\RuntimeException) {
         }
 
-        Assert::same($logger->records, [[
-            'level' => 'error',
-            'message' => 'Outbox publisher threw an unexpected exception',
-            'context' => [
-                'messageId' => 'msg-1',
-                'attempts' => 1,
-                'exception' => \RuntimeException::class,
-                'error' => 'connection reset',
-            ],
+        Assert::same($this->errorMessages->all(), ['Outbox publisher threw an unexpected exception']);
+        Assert::same($this->errorContexts->all(), [[
+            'messageId' => 'msg-1',
+            'attempts' => 1,
+            'exception' => \RuntimeException::class,
+            'error' => 'connection reset',
         ]]);
     }
 
@@ -263,7 +348,7 @@ final class ProcessorTest
         // Anything that is not a PublishException is a bug in the publisher and
         // is rethrown — but the rows this batch claimed must not be stranded in
         // Processing, because no API can move them back.
-        $this->publisher->throwUnexpected = new \RuntimeException('connection reset');
+        $this->throwOnEveryPublish(new \RuntimeException('connection reset'));
 
         foreach (['msg-1', 'msg-2', 'msg-3'] as $id) {
             $this->storage->save(
@@ -281,7 +366,7 @@ final class ProcessorTest
 
         Assert::notNull($thrown);
         Assert::same($thrown->getMessage(), 'connection reset');
-        Assert::same($this->publisher->publishedIds, ['msg-1']);
+        Assert::same($this->publishedIds(), ['msg-1']);
 
         foreach (['msg-1', 'msg-2', 'msg-3'] as $id) {
             $stored = $this->storage->getById($id);
@@ -302,8 +387,8 @@ final class ProcessorTest
         // Pending and a later run publishes it again — this package delivers at
         // least once and the id is the consumer's deduplication key. Leaving it
         // Processing would be a row nothing in the API can move.
-        $logger = new SpyLogger();
-        $storage = new FailingStorage();
+        $logger = $this->logger();
+        [$storage] = $this->plainStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -318,7 +403,7 @@ final class ProcessorTest
             );
         }
 
-        $storage->failMarkPublished = new \RuntimeException('deadlock detected');
+        when(fn() => $storage->markPublished(Arg::any()))->throws(new \RuntimeException('deadlock detected'));
 
         $thrown = null;
 
@@ -330,7 +415,7 @@ final class ProcessorTest
 
         Assert::notNull($thrown);
         Assert::same($thrown->getMessage(), 'deadlock detected');
-        Assert::same($this->publisher->publishedIds, ['msg-1']);
+        Assert::same($this->publishedIds(), ['msg-1']);
 
         foreach (['msg-1', 'msg-2'] as $id) {
             $stored = $storage->getById($id);
@@ -347,8 +432,8 @@ final class ProcessorTest
         // The old shape ran markPublished() inside the publisher's try, so a
         // storage incident logged "publisher threw an unexpected exception" and
         // sent an operator to debug the wrong component.
-        $logger = new SpyLogger();
-        $storage = new FailingStorage();
+        $logger = $this->logger();
+        [$storage] = $this->plainStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -360,22 +445,19 @@ final class ProcessorTest
         $storage->save(
             OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build(),
         );
-        $storage->failMarkPublished = new \RuntimeException('deadlock detected');
+        when(fn() => $storage->markPublished(Arg::any()))->throws(new \RuntimeException('deadlock detected'));
 
         try {
             $processor->process();
         } catch (\RuntimeException) {
         }
 
-        Assert::same($logger->records, [[
-            'level' => 'error',
-            'message' => 'Outbox message was published but could not be marked published',
-            'context' => [
-                'messageId' => 'msg-1',
-                'attempts' => 1,
-                'exception' => \RuntimeException::class,
-                'error' => 'deadlock detected',
-            ],
+        Assert::same($this->errorMessages->all(), ['Outbox message was published but could not be marked published']);
+        Assert::same($this->errorContexts->all(), [[
+            'messageId' => 'msg-1',
+            'attempts' => 1,
+            'exception' => \RuntimeException::class,
+            'error' => 'deadlock detected',
         ]]);
     }
 
@@ -384,8 +466,8 @@ final class ProcessorTest
         // The release reaches for the storage that may well be why the batch
         // aborted. If its own failure propagated, the caller would receive a
         // symptom instead of the cause.
-        $logger = new SpyLogger();
-        $storage = new FailingStorage();
+        $logger = $this->logger();
+        [$storage] = $this->plainStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -400,8 +482,8 @@ final class ProcessorTest
             );
         }
 
-        $this->publisher->throwUnexpected = new \RuntimeException('connection reset');
-        $storage->failSave = new \LogicException('storage is down');
+        $this->throwOnEveryPublish(new \RuntimeException('connection reset'));
+        when(fn() => $storage->save(Arg::any()))->throws(new \LogicException('storage is down'));
 
         $thrown = null;
 
@@ -415,34 +497,27 @@ final class ProcessorTest
         Assert::instanceOf($thrown, \RuntimeException::class);
         Assert::same($thrown->getMessage(), 'connection reset');
 
-        Assert::same($logger->records, [
+        Assert::same($this->errorMessages->all(), [
+            'Outbox publisher threw an unexpected exception',
+            'Failed to persist an outbox message while aborting the batch',
+            'Failed to release a claimed outbox message',
+        ]);
+        Assert::same($this->errorContexts->all(), [
             [
-                'level' => 'error',
-                'message' => 'Outbox publisher threw an unexpected exception',
-                'context' => [
-                    'messageId' => 'msg-1',
-                    'attempts' => 1,
-                    'exception' => \RuntimeException::class,
-                    'error' => 'connection reset',
-                ],
+                'messageId' => 'msg-1',
+                'attempts' => 1,
+                'exception' => \RuntimeException::class,
+                'error' => 'connection reset',
             ],
             [
-                'level' => 'error',
-                'message' => 'Failed to persist an outbox message while aborting the batch',
-                'context' => [
-                    'messageId' => 'msg-1',
-                    'exception' => \LogicException::class,
-                    'error' => 'storage is down',
-                ],
+                'messageId' => 'msg-1',
+                'exception' => \LogicException::class,
+                'error' => 'storage is down',
             ],
             [
-                'level' => 'error',
-                'message' => 'Failed to release a claimed outbox message',
-                'context' => [
-                    'messageId' => 'msg-2',
-                    'exception' => \LogicException::class,
-                    'error' => 'storage is down',
-                ],
+                'messageId' => 'msg-2',
+                'exception' => \LogicException::class,
+                'error' => 'storage is down',
             ],
         ]);
     }
@@ -466,14 +541,21 @@ final class ProcessorTest
 
         Assert::same($result->published, 1);
         Assert::same($result->failed, 1);
-        Assert::same($this->publisher->publishedIds, ['msg-2']);
+        Assert::same($this->publishedIds(), ['msg-2']);
         Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Failed);
         Assert::same($this->storage->getById('msg-2')?->getStatus(), OutboxStatus::Published);
     }
 
     public function continuesProcessingAfterAPublishFailure(): void
     {
-        $this->publisher->failIds = ['msg-1'];
+        // The specific stub is registered after the broad one, so it wins for
+        // 'msg-1' and the broad one answers for the rest of the batch.
+        when(fn() => $this->publisher->publish(Arg::which('getId', 'msg-1')))->answers(
+            fn(Invocation $call) => throw new PublishException(
+                message: 'Publish failed',
+                outboxMessage: $call->args[0],
+            ),
+        );
 
         foreach (['msg-1', 'msg-2'] as $id) {
             $this->storage->save(
@@ -485,7 +567,7 @@ final class ProcessorTest
 
         Assert::same($result->published, 1);
         Assert::same($result->failed, 1);
-        Assert::same($this->publisher->publishedIds, ['msg-1', 'msg-2']);
+        Assert::same($this->publishedIds(), ['msg-1', 'msg-2']);
         Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
         Assert::same($this->storage->getById('msg-2')?->getStatus(), OutboxStatus::Published);
     }
@@ -498,7 +580,7 @@ final class ProcessorTest
             retryPolicy: new RetryPolicy(maxAttempts: 1, delaySeconds: 0),
             clock: $this->clock,
         );
-        $this->publisher->throwUnexpected = new \TypeError('bad argument');
+        $this->throwOnEveryPublish(new \TypeError('bad argument'));
 
         $this->storage->save(
             OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build(),
@@ -516,7 +598,7 @@ final class ProcessorTest
 
     public function skipsWhenDelayNotElapsed(): void
     {
-        $storage = new FailingStorage();
+        [$storage] = $this->plainStorage();
         $policy = new RetryPolicy(maxAttempts: 3, delaySeconds: 60);
         $processor = new Processor(
             storage: $storage,
@@ -536,7 +618,7 @@ final class ProcessorTest
 
         $result = $processor->process();
 
-        // FailingStorage is a plain StorageInterface, so the batch arrives
+        // The storage double is a plain StorageInterface, so the batch arrives
         // unfiltered and the loop is what discards this message.
         Assert::same($result->published, 0);
         Assert::same($result->skipped, 1);
@@ -550,7 +632,7 @@ final class ProcessorTest
      */
     public function doesNotClaimMessagesStillWaitingOutTheirBackoff(): void
     {
-        $storage = new RecordingStorage();
+        [$storage, $innerStorage] = $this->retryAwareStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -558,7 +640,7 @@ final class ProcessorTest
             clock: $this->clock,
         );
 
-        $storage->seed(
+        $innerStorage->save(
             OutboxMessageBuilder::create()
                 ->withId('backing-off')
                 ->withStatus(OutboxStatus::Pending)
@@ -569,9 +651,9 @@ final class ProcessorTest
 
         $result = $processor->process();
 
-        Assert::same($storage->claimReadyCalls, 1);
-        Assert::same($storage->claimCalls, 0);
-        Assert::same($storage->saves, 0);
+        verify(fn() => $storage->claimReady(Arg::any(), Arg::any(), Arg::any(), Arg::any()), times: 1);
+        verify(fn() => $storage->claim(Arg::any(), Arg::any()), never: true);
+        verify(fn() => $storage->save(Arg::any()), never: true);
         Assert::same($result->skipped, 0);
         Assert::same($result->published, 0);
         Assert::same($storage->getById('backing-off')?->getStatus(), OutboxStatus::Pending);
@@ -586,7 +668,7 @@ final class ProcessorTest
      */
     public function claimsExhaustedMessagesInsideTheBackoffWindow(): void
     {
-        $storage = new RecordingStorage();
+        [$storage, $innerStorage] = $this->retryAwareStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -594,7 +676,7 @@ final class ProcessorTest
             clock: $this->clock,
         );
 
-        $storage->seed(
+        $innerStorage->save(
             OutboxMessageBuilder::create()
                 ->withId('exhausted')
                 ->withStatus(OutboxStatus::Pending)
@@ -615,7 +697,7 @@ final class ProcessorTest
      */
     public function plainStorageBatchContinuesPastANotReadyMessage(): void
     {
-        $storage = new FailingStorage();
+        [$storage] = $this->plainStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -648,7 +730,7 @@ final class ProcessorTest
 
     public function fallsBackToPlainClaimWhenStorageIsNotRetryAware(): void
     {
-        $storage = new FailingStorage();
+        [$storage] = $this->plainStorage();
         $processor = new Processor(
             storage: $storage,
             publisher: $this->publisher,
@@ -815,9 +897,18 @@ final class ProcessorTest
     {
         $maxAttempts = 3;
         $storage = new InMemoryStorage();
-        $publisher = new StubPublisher();
-        $publisher->shouldFail = $publisherBehaviour === 'publishException';
-        $publisher->throwUnexpected = $publisherBehaviour === 'unexpected' ? new \RuntimeException('boom') : null;
+        $publisher = Understudy::for(PublisherInterface::class);
+
+        if ($publisherBehaviour === 'publishException') {
+            when(fn() => $publisher->publish(Arg::any()))->answers(
+                fn(Invocation $call) => throw new PublishException(
+                    message: 'Publish failed',
+                    outboxMessage: $call->args[0],
+                ),
+            );
+        } elseif ($publisherBehaviour === 'unexpected') {
+            when(fn() => $publisher->publish(Arg::any()))->throws(new \RuntimeException('boom'));
+        }
 
         $now = new DateTimeImmutable('2026-06-01 12:00:00');
 
@@ -836,7 +927,7 @@ final class ProcessorTest
             storage: $storage,
             publisher: $publisher,
             retryPolicy: new RetryPolicy(maxAttempts: $maxAttempts, delaySeconds: 30),
-            clock: new StubClock($now),
+            clock: $this->fixedClock($now->format('Y-m-d H:i:s')),
         );
 
         // Exactly the messages the readiness pushdown lets through: never

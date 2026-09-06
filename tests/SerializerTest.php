@@ -271,7 +271,7 @@ final class SerializerTest
         Classify::cover($accepted, 'accepted', 5.0);
         Classify::cover(!$accepted, 'rejected', 20.0);
 
-        Assert::true(true);
+        Assert::true(actual: true);
     }
 
     /** @return array<string, ArbitraryInterface> */
