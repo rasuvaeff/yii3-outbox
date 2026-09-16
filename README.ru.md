@@ -248,6 +248,43 @@ final class DbStorage implements RetryAwareStorageInterface
 - Сообщение с исчерпанными попытками завершается на величину до `delaySeconds`
   позже, чем раньше: теперь оно ждёт батча, в который попадёт.
 
+### Подтверждение батча одной записью
+
+`markPublished()` принимает одно сообщение. Потребитель, доставляющий батч
+целиком — одним bulk insert в ClickHouse, одним multi-message вызовом брокера, —
+подтверждает его по одной записи на сообщение, а над SQL-хранилищем это тысяча
+statements на батч из тысячи сообщений, и все они ложатся в ту же OLTP-базу,
+куда приложение пишет бизнес-строки.
+
+Хранилище, умеющее подтвердить много сообщений одним statement'ом, реализует
+`BatchAcknowledgingStorageInterface`, а батчевый потребитель обнаруживает его
+через `instanceof`:
+
+```php
+use Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface;
+
+final class DbStorage implements BatchAcknowledgingStorageInterface
+{
+    public function markPublishedBatch(array $messages): void
+    {
+        // UPDATE outbox SET status = 'published', ... WHERE id IN (:ids)
+    }
+
+    // ... остальной StorageInterface без изменений
+}
+```
+
+Оставлять подтверждённую строку как `Published` или удалять её совсем — решение
+хранилища, а не потребителя, и оно обязано распространяться и на
+`markPublished()`: тогда все источники подтверждений сходятся в том, что лежит
+в таблице. `rasuvaeff/yii3-outbox-db` реализует интерфейс и даёт оба поведения
+за флагом; `rasuvaeff/yii3-outbox-clickhouse` подтверждает через него.
+`Processor` публикует по одному сообщению и продолжает пользоваться
+`markPublished()`: батчевое подтверждение расширило бы окно, в котором падение
+переотправляет сообщения, уже отданные паблишеру. Хранилище без интерфейса
+по-прежнему корректно — батчевый потребитель откатывается на
+`markPublished()` по одному.
+
 ### Реализация паблишера
 
 ```php
@@ -385,6 +422,16 @@ $storage->clear();
 | Метод | Описание |
 |---|---|
 | `claimReady(readyThreshold, maxAttempts, types = [], limit = 1000)` | Как `claim()`, но пропускает сообщения, ещё ждущие следующей попытки. Берёт сообщение, если оно ни разу не отправлялось, последняя попытка была в `readyThreshold` или раньше, либо попытки уже исчерпаны (`maxAttempts`) |
+
+### BatchAcknowledgingStorageInterface
+
+Расширяет `StorageInterface`. Опционален: реализуется, когда бэкенд умеет
+пометить много сообщений `Published` одним statement'ом — см.
+[Подтверждение батча одной записью](#подтверждение-батча-одной-записью).
+
+| Метод | Описание |
+|---|---|
+| `markPublishedBatch(messages)` | Помечает каждое сообщение списка `Published`, как сделал бы `markPublished()` для каждого, за минимально возможное число записей. Пустой список — no-op |
 
 ### OutboxMessage
 

@@ -15,7 +15,7 @@ use Traversable;
  *
  * @implements IteratorAggregate<string, OutboxMessage>
  */
-final class InMemoryStorage implements RetryAwareStorageInterface, IteratorAggregate, Countable
+final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowledgingStorageInterface, IteratorAggregate, Countable
 {
     /** @var array<string, OutboxMessage> */
     private array $messages = [];
@@ -117,6 +117,14 @@ final class InMemoryStorage implements RetryAwareStorageInterface, IteratorAggre
     public function markPublished(OutboxMessage $message): void
     {
         $this->messages[$message->getId()] = $message->withStatus(OutboxStatus::Published);
+    }
+
+    #[\Override]
+    public function markPublishedBatch(array $messages): void
+    {
+        foreach ($messages as $message) {
+            $this->markPublished($message);
+        }
     }
 
     #[\Override]

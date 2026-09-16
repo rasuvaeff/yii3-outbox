@@ -17,6 +17,7 @@ composer require rasuvaeff/yii3-outbox
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
 - `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
 - A storage may implement `RetryAwareStorageInterface` (extends `StorageInterface`); `Processor` then claims via `claimReady()` and messages still in backoff are never claimed. Without it, `Processor` falls back to `claim()` and filters in PHP — same result, two writes per backing-off message per iteration.
+- A storage may implement `BatchAcknowledgingStorageInterface` (extends `StorageInterface`): `markPublishedBatch(list<OutboxMessage>)` marks them all `Published` in one statement. Batching consumers (`yii3-outbox-clickhouse`) use it via `instanceof` and fall back to per-message `markPublished()`. Keep-vs-delete of acknowledged rows is the storage's policy and must apply to `markPublished()` too.
 - Failed publish keeps message as `Pending` if retries remain; marks `Failed` when exhausted.
 - Every claimed message leaves `Processing`. A message claimed with attempts already spent is marked `Failed` on sight (it can never be retried and nothing else would terminate it).
 - A publisher throwing anything other than `PublishException` is rethrown by `process()`; before that the current message is persisted per the retry policy and the rest of the claimed batch is released back to `Pending`, so nothing is stranded in `Processing`.
@@ -112,6 +113,23 @@ interface StorageInterface
     public function markPublished(OutboxMessage $message): void;
     public function markFailed(OutboxMessage $message): void;
     public function getById(string $id): ?OutboxMessage;
+}
+```
+
+### BatchAcknowledgingStorageInterface
+
+Optional. Implement it when the backend can acknowledge many messages in one
+statement. A batching consumer detects it with `instanceof`; `Processor` does
+not use it.
+
+```php
+interface BatchAcknowledgingStorageInterface extends StorageInterface
+{
+    // As markPublished() for each message, in as few writes as possible.
+    // Keep-as-Published vs. delete is the storage's policy and must match
+    // markPublished(). Empty list is a no-op.
+    /** @param list<OutboxMessage> $messages */
+    public function markPublishedBatch(array $messages): void;
 }
 ```
 

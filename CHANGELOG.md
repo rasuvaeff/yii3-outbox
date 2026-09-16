@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- `BatchAcknowledgingStorageInterface`, an optional extension of
+  `StorageInterface` for backends that can mark many messages `Published` in
+  one statement: `markPublishedBatch(list<OutboxMessage>)`. A consumer that
+  delivers a batch as a unit acknowledges through it instead of one
+  `markPublished()` per message; keep-vs-delete of acknowledged rows is the
+  storage's policy. `InMemoryStorage` implements it. `Processor` is unchanged
+  (#24).
+
+### Changed
+
 - Tests build their doubles with `rasuvaeff/understudy-testo` instead of
   hand-written fake classes: `SpyLogger`, `StubPublisher`, `StubClock`,
   `FixedIdGenerator`, `FailingStorage` and `RecordingStorage` are gone. The

@@ -243,6 +243,43 @@ Two consequences worth knowing before you alert on them:
 - A message whose attempts are spent is terminated up to `delaySeconds` later
   than before, since it now waits for a batch that includes it.
 
+### Acknowledging a batch in one write
+
+`markPublished()` takes one message. A consumer that delivers a batch as a
+unit — one bulk insert into ClickHouse, one multi-message broker call — then
+acknowledges it with one write per message, and over an SQL storage that is a
+thousand statements for a thousand-message batch, all of them in the OLTP
+database the application writes its business rows to.
+
+A storage that can acknowledge many messages in one statement implements
+`BatchAcknowledgingStorageInterface`, and a batching consumer detects it with
+`instanceof`:
+
+```php
+use Rasuvaeff\Yii3Outbox\BatchAcknowledgingStorageInterface;
+
+final class DbStorage implements BatchAcknowledgingStorageInterface
+{
+    public function markPublishedBatch(array $messages): void
+    {
+        // UPDATE outbox SET status = 'published', ... WHERE id IN (:ids)
+    }
+
+    // ... the rest of StorageInterface unchanged
+}
+```
+
+Whether an acknowledged row is kept as `Published` or deleted outright is the
+storage's decision, not the consumer's, and it must apply to `markPublished()`
+as well — every producer of acknowledgements then agrees on what the table
+holds. `rasuvaeff/yii3-outbox-db` implements the interface and offers both
+behaviours behind a flag; `rasuvaeff/yii3-outbox-clickhouse` acknowledges
+through it. `Processor` publishes one message at a time and keeps using
+`markPublished()`: batching its acknowledgements would widen the window in
+which a crash redelivers messages already handed to the publisher. A storage
+without the interface is still correct — a batching consumer falls back to
+per-message `markPublished()`.
+
 ### Implementing a publisher
 
 ```php
@@ -380,6 +417,16 @@ the retry policy inside the claim itself — see
 | Method | Description |
 |---|---|
 | `claimReady(readyThreshold, maxAttempts, types = [], limit = 1000)` | Like `claim()`, but skips messages still waiting for their next attempt. Takes a message when it has never been attempted, was last attempted at or before `readyThreshold`, or has already spent `maxAttempts` attempts |
+
+### BatchAcknowledgingStorageInterface
+
+Extends `StorageInterface`. Optional: implement it when the backend can mark
+many messages `Published` in one statement — see
+[Acknowledging a batch in one write](#acknowledging-a-batch-in-one-write).
+
+| Method | Description |
+|---|---|
+| `markPublishedBatch(messages)` | Marks every message in the list `Published`, as `markPublished()` would do for each, in as few writes as the backend allows. Empty list is a no-op |
 
 ### OutboxMessage
 
