@@ -144,6 +144,34 @@ final class InMemoryStorageTest
         Assert::same($retrieved->getStatus(), OutboxStatus::Published);
     }
 
+    public function markPublishedBatchUpdatesEveryStatus(): void
+    {
+        $first = OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Processing)->build();
+        $second = OutboxMessageBuilder::create()->withId('msg-2')->withStatus(OutboxStatus::Processing)->build();
+        $untouched = OutboxMessageBuilder::create()->withId('msg-3')->withStatus(OutboxStatus::Processing)->build();
+
+        $this->fixture->save($first);
+        $this->fixture->save($second);
+        $this->fixture->save($untouched);
+
+        $this->fixture->markPublishedBatch([$first, $second]);
+
+        Assert::same($this->fixture->getById('msg-1')?->getStatus(), OutboxStatus::Published);
+        Assert::same($this->fixture->getById('msg-2')?->getStatus(), OutboxStatus::Published);
+        Assert::same($this->fixture->getById('msg-3')?->getStatus(), OutboxStatus::Processing);
+    }
+
+    public function markPublishedBatchWithEmptyListChangesNothing(): void
+    {
+        $message = OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Processing)->build();
+        $this->fixture->save($message);
+
+        $this->fixture->markPublishedBatch([]);
+
+        Assert::same($this->fixture->getById('msg-1')?->getStatus(), OutboxStatus::Processing);
+        Assert::count($this->fixture, 1);
+    }
+
     public function markFailedUpdatesStatus(): void
     {
         $message = OutboxMessageBuilder::create()
