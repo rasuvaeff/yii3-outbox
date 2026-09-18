@@ -123,4 +123,20 @@ final readonly class OutboxMessage
             aggregateId: $this->aggregateId,
         );
     }
+
+    /**
+     * The message as it was before its first attempt: `Pending`, zero
+     * attempts, no last attempt. What a requeue puts back into the storage.
+     */
+    public function withAttemptsReset(): self
+    {
+        return new self(
+            id: $this->id,
+            type: $this->type,
+            payload: $this->payload,
+            status: OutboxStatus::Pending,
+            createdAt: $this->createdAt,
+            aggregateId: $this->aggregateId,
+        );
+    }
 }

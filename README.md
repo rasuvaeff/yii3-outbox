@@ -41,6 +41,7 @@ $clock = new class implements ClockInterface {
     public function now(): DateTimeImmutable { return new DateTimeImmutable(); }
 };
 
+$storage = new InMemoryStorage(); // rasuvaeff/yii3-outbox-db for a real one
 $outbox = new Outbox(storage: $storage, clock: $clock);
 
 $message = $outbox->record(
@@ -132,6 +133,26 @@ $outbox = new Outbox(storage: $storage, clock: $clock, idGenerator: new Uuid7IdG
 The package ships no UUID implementation and depends on no UUID library —
 `id` is `VARCHAR(255)` in `rasuvaeff/yii3-outbox-db`, so any format fits and
 the choice stays yours.
+
+### Recording several messages at once
+
+A request that produces five events records five messages. `recordMany()`
+takes drafts — everything `record()` takes, minus what the outbox fills in —
+reads the clock once so the batch is one moment in the outbox's history, and
+writes them in one statement when the storage is a
+`BatchSavingStorageInterface` (see [Saving a batch in one write](#saving-a-batch-in-one-write)),
+one `save()` per message otherwise. Same transactional obligation as
+`record()`:
+
+```php
+use Rasuvaeff\Yii3Outbox\OutboxMessageDraft;
+
+$messages = $outbox->recordMany([
+    new OutboxMessageDraft(type: 'order.created', payload: $created, aggregateId: 'order-42'),
+    new OutboxMessageDraft(type: 'order.paid', payload: $paid, aggregateId: 'order-42', id: $paidEvent->getId()),
+]);
+// list<OutboxMessage>, in the order given; an empty list touches nothing
+```
 
 ### Implementing storage
 
@@ -280,6 +301,70 @@ which a crash redelivers messages already handed to the publisher. A storage
 without the interface is still correct — a batching consumer falls back to
 per-message `markPublished()`.
 
+### Saving a batch in one write
+
+The mirror image on the recording side. `recordMany()` calls `save()` once per
+message; a storage that can express the batch as one multi-row insert
+implements `BatchSavingStorageInterface`, and `recordMany()` uses it:
+
+```php
+use Rasuvaeff\Yii3Outbox\BatchSavingStorageInterface;
+
+final class DbStorage implements BatchSavingStorageInterface
+{
+    public function saveBatch(array $messages): void
+    {
+        // INSERT INTO outbox (...) VALUES (...), (...), (...)
+    }
+}
+```
+
+The transactional contract is the one of `save()`: through the application's
+connection, inside the caller's transaction. An empty list is a no-op.
+
+### Requeueing failed messages
+
+A message reaches `Failed` when its attempts run out or a publisher declares
+the failure terminal. Once the cause is fixed — the receiver is back, the
+payload bug is deployed — an operator wants those messages published after all,
+and nothing in `StorageInterface` can move a `Failed` row. A storage that can
+implements `RequeueableStorageInterface`; `Outbox::requeueFailed()` drives it:
+
+```php
+$moved = $outbox->requeueFailed(types: ['order.created'], limit: 500);
+// every Failed message of that type is Pending again with attempts reset;
+// a storage that cannot requeue makes this throw LogicException
+```
+
+`requeue()` only moves a message the storage *currently* holds as `Failed` —
+one a worker or another operator got to first is left alone and not counted.
+`InMemoryStorage` and `rasuvaeff/yii3-outbox-db` implement the interface.
+
+### Watching the backlog
+
+`Processing` that only grows means workers die mid-batch; `Failed` that only
+grows means a publisher is broken. A storage that can count cheaply implements
+`StatsAwareStorageInterface` and answers with one aggregate query:
+
+```php
+use Rasuvaeff\Yii3Outbox\StatsAwareStorageInterface;
+
+if ($storage instanceof StatsAwareStorageInterface) {
+    $stats = $storage->stats();
+    $stats->pending;                          // int
+    $stats->processing;                       // int
+    $stats->failed;                           // int
+    $stats->published;                        // int
+    $stats->total();                          // sum
+    $stats->countOf(OutboxStatus::Failed);    // by enum case
+    $stats->oldestPendingCreatedAt;           // ?DateTimeImmutable
+    $stats->oldestPendingAgeSeconds($now);    // ?int — the gauge to alert on
+}
+```
+
+The snapshot is a gauge, not a ledger: two calls around a concurrent write may
+disagree, which is fine for a health check.
+
 ### Implementing a publisher
 
 ```php
@@ -304,6 +389,19 @@ final class RabbitPublisher implements PublisherInterface
 }
 ```
 
+Every `PublishException` is retried until the `RetryPolicy` runs out of
+attempts. When the publisher knows no retry can fix it — the receiver is gone
+(410), the payload was rejected as malformed — it says so, and `Processor`
+marks the message `Failed` at once instead of spending the remaining attempts
+on delaying the alert:
+
+```php
+throw PublishException::terminal(
+    message: sprintf('Endpoint %s returned 410 Gone', $endpoint),
+    outboxMessage: $message,
+);
+```
+
 ### Processing the outbox
 
 ```php
@@ -325,11 +423,49 @@ $result = $processor->process();
 //                     a RetryAwareStorageInterface, which never claims them
 ```
 
+### Sharing a storage between consumers
+
+`Processor` claims **every** pending message in the storage, whatever its
+type. On a storage shared with another consumer that claims by type — a
+`ClickHouseOutboxExporter` from `rasuvaeff/yii3-outbox-clickhouse`, a second
+`Processor` with a different publisher — that is data loss: the unscoped
+processor claims the other consumer's messages, its publisher does whatever it
+does with a type it never expected (a webhook publisher with no endpoints for
+it acknowledges silently), and the message is `Published` before the consumer
+it was meant for ever sees it.
+
+Scope each processor to the types it owns:
+
+```php
+$webhooks = new Processor(
+    storage: $storage,
+    publisher: $webhookPublisher,
+    retryPolicy: $policy,
+    clock: $clock,
+    types: ['order.created', 'order.paid'],
+);
+
+$broker = new Processor(
+    storage: $storage,
+    publisher: $rabbitPublisher,
+    retryPolicy: $policy,
+    clock: $clock,
+    types: ['inventory.reserved'],
+);
+```
+
+The scope is forwarded to `claim()` / `claimReady()`, so a scoped processor
+never even sees a foreign message. An empty scope (the default) keeps claiming
+everything — right for the common case of one storage, one consumer.
+
 ### Retry behaviour
 
 When a publish fails:
 - If attempts < `maxAttempts` → message stays `Pending`, will be retried after `delaySeconds`
 - If attempts >= `maxAttempts` → message is marked `Failed` (terminal)
+- If the publisher threw `PublishException::terminal()` → message is marked
+  `Failed` at once, whatever the attempt count; the warning log carries
+  `terminal: true`
 
 Every message a batch claims leaves `Processing`. A message that is claimed
 with its attempts already spent — restored from a backup, or left behind by a
@@ -391,6 +527,14 @@ $storage->clear();
 |---|---|
 | `__construct(storage, clock, idGenerator?)` | Main entry point; default generator = `RandomHexIdGenerator` |
 | `record(type, payload, aggregateId?, id?)` | Create and persist message, returns `OutboxMessage`. `id` = the domain event's id; omitted → generator. Call inside the business transaction |
+| `recordMany(list<OutboxMessageDraft>)` | Same for several messages: one clock read, one `saveBatch()` when the storage is a `BatchSavingStorageInterface`, else one `save()` each. Returns `list<OutboxMessage>` in the order given; `[]` touches nothing |
+| `requeueFailed(types = [], limit = 1000)` | Moves `Failed` messages back to `Pending` with attempts reset through `RequeueableStorageInterface`; returns how many moved. `LogicException` when the storage cannot requeue |
+
+### OutboxMessageDraft
+
+| Property | Description |
+|---|---|
+| `type`, `payload`, `aggregateId?`, `id?` | What `record()` takes; `type` and `id` must not be empty. Consumed by `recordMany()` |
 
 ### StorageInterface
 
@@ -428,6 +572,42 @@ many messages `Published` in one statement — see
 |---|---|
 | `markPublishedBatch(messages)` | Marks every message in the list `Published`, as `markPublished()` would do for each, in as few writes as the backend allows. Empty list is a no-op |
 
+### BatchSavingStorageInterface
+
+Extends `StorageInterface`. Optional: implement it when the backend can insert
+many rows in one statement — see [Saving a batch in one write](#saving-a-batch-in-one-write).
+
+| Method | Description |
+|---|---|
+| `saveBatch(messages)` | Persists every message under the `save()` contract. Empty list is a no-op |
+
+### RequeueableStorageInterface
+
+Extends `StorageInterface`. Optional — see [Requeueing failed messages](#requeueing-failed-messages).
+
+| Method | Description |
+|---|---|
+| `findFailed(types = [], limit = 1000)` | `Failed` messages, oldest first where the backend keeps an order |
+| `requeue(message)` | `Failed` → `Pending` with attempts reset (`OutboxMessage::withAttemptsReset()`). Returns `false`, touching nothing, when the storage no longer holds the message as `Failed` |
+
+### StatsAwareStorageInterface
+
+Extends `StorageInterface`. Optional — see [Watching the backlog](#watching-the-backlog).
+
+| Method | Description |
+|---|---|
+| `stats()` | An `OutboxStats` snapshot |
+
+### OutboxStats
+
+| Property/Method | Description |
+|---|---|
+| `$pending`, `$processing`, `$published`, `$failed` | Counts; each non-negative |
+| `$oldestPendingCreatedAt` | `?DateTimeImmutable`; `null` when nothing is pending or the backend does not track it |
+| `total()` | Sum of the four counts |
+| `countOf(status)` | The count for an `OutboxStatus` case |
+| `oldestPendingAgeSeconds(now)` | Seconds since the oldest pending message was created, never negative; `null` without a timestamp |
+
 ### OutboxMessage
 
 | Method | Description |
@@ -443,6 +623,7 @@ many messages `Published` in one statement — see
 | `getAggregateId()` | `?string` |
 | `withStatus(status)` | Returns new instance with status |
 | `withAttempt(at)` | Returns new instance with incremented attempts and timestamp |
+| `withAttemptsReset()` | Returns new instance as never attempted: `Pending`, zero attempts, no last attempt. What a requeue stores |
 
 ### MessageIdGeneratorInterface
 
@@ -458,7 +639,7 @@ many messages `Published` in one statement — see
 | `Pending` | `'pending'` | Awaiting publication, including retries with `attempts > 0` |
 | `Processing` | `'processing'` | Claimed by a worker; no other worker may take it |
 | `Published` | `'published'` | Terminal success |
-| `Failed` | `'failed'` | Terminal failure, retries exhausted |
+| `Failed` | `'failed'` | Terminal failure: retries exhausted or declared terminal by the publisher. Movable only by a requeue |
 
 ### RetryPolicy
 
@@ -473,8 +654,16 @@ many messages `Published` in one statement — see
 
 | Method | Description |
 |---|---|
-| `__construct(storage, publisher, retryPolicy, clock, batchSize, logger)` | Default batch: 100 |
+| `__construct(storage, publisher, retryPolicy, clock, batchSize, logger, types)` | Default batch: 100. `types` (`list<string>`, default `[]` = every type) scopes what this processor claims — see [Sharing a storage between consumers](#sharing-a-storage-between-consumers) |
 | `process()` | Returns `ProcessingResult` |
+
+### PublishException
+
+| Method | Description |
+|---|---|
+| `__construct(message, outboxMessage, code = 0, previous = null, terminal = false)` | What a publisher throws on a delivery failure; retried per `RetryPolicy` |
+| `terminal(message, outboxMessage, code = 0, previous = null)` | Static factory for a failure no retry can fix; `Processor` marks the message `Failed` at once |
+| `getOutboxMessage()`, `isTerminal()` | Accessors |
 
 ### ProcessingResult
 

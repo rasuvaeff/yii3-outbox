@@ -7,6 +7,7 @@ namespace Rasuvaeff\Yii3Outbox\Tests\Support;
 use DateTimeImmutable;
 use Rasuvaeff\Yii3Outbox\InMemoryStorage;
 use Rasuvaeff\Yii3Outbox\OutboxMessage;
+use Rasuvaeff\Yii3Outbox\OutboxStats;
 use Rasuvaeff\Yii3Outbox\OutboxStatus;
 
 /**
@@ -64,6 +65,38 @@ final class OutboxHarness
         if ($message !== null) {
             $this->storage->markFailed($message);
         }
+    }
+
+    public function requeue(int $index): void
+    {
+        $message = $this->messageAt($index);
+
+        if ($message !== null) {
+            $this->storage->requeue($message);
+        }
+    }
+
+    public function stats(): OutboxStats
+    {
+        return $this->storage->stats();
+    }
+
+    /**
+     * The `createdAt` of the oldest message that is currently Pending, in
+     * save order — what {@see OutboxStats::$oldestPendingCreatedAt} must
+     * report.
+     */
+    public function oldestPendingCreatedAt(): ?DateTimeImmutable
+    {
+        foreach ($this->ids as $id) {
+            $message = $this->storage->getById($id);
+
+            if ($message?->getStatus() === OutboxStatus::Pending) {
+                return $message->getCreatedAt();
+            }
+        }
+
+        return null;
     }
 
     /**

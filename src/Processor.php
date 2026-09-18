@@ -15,6 +15,13 @@ use Psr\Log\NullLogger;
  */
 final readonly class Processor
 {
+    /**
+     * @param list<string> $types the message types this processor claims;
+     *                            empty = every type in the storage. Several
+     *                            consumers sharing one storage each name their
+     *                            own types, or one of them acknowledges what
+     *                            another was supposed to deliver
+     */
     public function __construct(
         private StorageInterface $storage,
         private PublisherInterface $publisher,
@@ -22,9 +29,16 @@ final readonly class Processor
         private ClockInterface $clock,
         private int $batchSize = 100,
         private LoggerInterface $logger = new NullLogger(),
+        private array $types = [],
     ) {
         if ($batchSize < 1) {
             throw new InvalidArgumentException('Batch size must be at least 1');
+        }
+
+        foreach ($types as $type) {
+            if ($type === '') {
+                throw new InvalidArgumentException('Message type must not be empty');
+            }
         }
     }
 
@@ -84,10 +98,18 @@ final readonly class Processor
                     $this->logger->warning('Failed to publish outbox message', [
                         'messageId' => $message->getId(),
                         'attempts' => $message->getAttempts(),
+                        'terminal' => $e->isTerminal(),
                         'error' => $e->getMessage(),
                     ]);
 
-                    $this->persistFailure($message);
+                    if ($e->isTerminal()) {
+                        // The publisher knows no retry can fix this; spending
+                        // the remaining attempts would only delay the alert.
+                        $this->storage->markFailed($message);
+                    } else {
+                        $this->persistFailure($message);
+                    }
+
                     $failed++;
 
                     continue;
@@ -167,11 +189,12 @@ final readonly class Processor
             return $this->storage->claimReady(
                 readyThreshold: $this->retryPolicy->readyThreshold($now),
                 maxAttempts: $this->retryPolicy->getMaxAttempts(),
+                types: $this->types,
                 limit: $this->batchSize,
             );
         }
 
-        return $this->storage->claim(limit: $this->batchSize);
+        return $this->storage->claim(types: $this->types, limit: $this->batchSize);
     }
 
     /**

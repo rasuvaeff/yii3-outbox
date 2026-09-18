@@ -60,4 +60,55 @@ final class PublishExceptionTest
 
         Assert::same($exception->getCode(), 0);
     }
+
+    public function isNotTerminalByDefault(): void
+    {
+        $exception = new PublishException(
+            message: 'Failed',
+            outboxMessage: OutboxMessage::create(type: 'test', payload: '{}'),
+        );
+
+        Assert::false($exception->isTerminal());
+    }
+
+    public function terminalFactoryMarksTheFailureTerminal(): void
+    {
+        $previous = new \RuntimeException('410 Gone');
+        $message = OutboxMessage::create(type: 'test', payload: '{}');
+
+        $exception = PublishException::terminal(
+            message: 'Endpoint is gone',
+            outboxMessage: $message,
+            code: 410,
+            previous: $previous,
+        );
+
+        Assert::true($exception->isTerminal());
+        Assert::same($exception->getMessage(), 'Endpoint is gone');
+        Assert::same($exception->getOutboxMessage(), $message);
+        Assert::same($exception->getCode(), 410);
+        Assert::same($exception->getPrevious(), $previous);
+    }
+
+    public function terminalFactoryDefaultsCodeAndPrevious(): void
+    {
+        $exception = PublishException::terminal(
+            message: 'Endpoint is gone',
+            outboxMessage: OutboxMessage::create(type: 'test', payload: '{}'),
+        );
+
+        Assert::same($exception->getCode(), 0);
+        Assert::null($exception->getPrevious());
+    }
+
+    public function constructorAcceptsTheTerminalFlag(): void
+    {
+        $exception = new PublishException(
+            message: 'Failed',
+            outboxMessage: OutboxMessage::create(type: 'test', payload: '{}'),
+            terminal: true,
+        );
+
+        Assert::true($exception->isTerminal());
+    }
 }

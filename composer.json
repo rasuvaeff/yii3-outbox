@@ -37,7 +37,7 @@
         "rasuvaeff/understudy-testo": "^0.3",
         "rector/rector": "^2.4",
         "roave/backward-compatibility-check": "^8.0",
-        "testo/bridge-infection": "0.1.6",
+        "testo/bridge-infection": "^0.1.6",
         "testo/testo": "^0.10.25",
         "vimeo/psalm": "^6.16"
     },
@@ -64,6 +64,9 @@
         "sort-packages": true
     },
     "extra": {
+        "branch-alias": {
+            "dev-master": "1.x-dev"
+        },
         "skills": {
             "source": "resources/skills"
         }

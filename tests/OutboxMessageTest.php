@@ -171,4 +171,34 @@ final class OutboxMessageTest
             attempts: -1,
         );
     }
+
+    public function withAttemptsResetReturnsTheMessageAsNeverAttempted(): void
+    {
+        $createdAt = new DateTimeImmutable('2026-06-01 10:00:00');
+        $failed = new OutboxMessage(
+            id: 'msg-1',
+            type: 'order.created',
+            payload: '{"orderId": 42}',
+            status: OutboxStatus::Failed,
+            createdAt: $createdAt,
+            attempts: 3,
+            lastAttemptAt: new DateTimeImmutable('2026-06-01 11:00:00'),
+            aggregateId: 'order-42',
+        );
+
+        $reset = $failed->withAttemptsReset();
+
+        Assert::notSame($reset, $failed);
+        Assert::same($reset->getStatus(), OutboxStatus::Pending);
+        Assert::same($reset->getAttempts(), 0);
+        Assert::null($reset->getLastAttemptAt());
+        Assert::same($reset->getId(), 'msg-1');
+        Assert::same($reset->getType(), 'order.created');
+        Assert::same($reset->getPayload(), '{"orderId": 42}');
+        Assert::same($reset->getCreatedAt(), $createdAt);
+        Assert::same($reset->getAggregateId(), 'order-42');
+        // the original is untouched
+        Assert::same($failed->getStatus(), OutboxStatus::Failed);
+        Assert::same($failed->getAttempts(), 3);
+    }
 }

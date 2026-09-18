@@ -18,9 +18,11 @@ use Rasuvaeff\Yii3Outbox\Tests\Support\ClaimCommand;
 use Rasuvaeff\Yii3Outbox\Tests\Support\FailCommand;
 use Rasuvaeff\Yii3Outbox\Tests\Support\OutboxHarness;
 use Rasuvaeff\Yii3Outbox\Tests\Support\PublishCommand;
+use Rasuvaeff\Yii3Outbox\Tests\Support\RequeueCommand;
 use Rasuvaeff\Yii3Outbox\Tests\Support\SaveCommand;
 use Testo\Assert;
 use Testo\Codecov\Covers;
+use Testo\Data\DataProvider;
 use Testo\Lifecycle\BeforeTest;
 use Testo\Test;
 
@@ -454,6 +456,186 @@ final class InMemoryStorageTest
         Assert::same($this->fixture->claimReady(new DateTimeImmutable('2026-06-01 11:59:00'), 3), []);
     }
 
+    public function saveBatchPersistsEveryMessage(): void
+    {
+        $first = OutboxMessageBuilder::create()->withId('msg-1')->build();
+        $second = OutboxMessageBuilder::create()->withId('msg-2')->withAggregateId('order-42')->build();
+
+        $this->fixture->saveBatch([$first, $second]);
+
+        Assert::count($this->fixture, 2);
+        Assert::same($this->fixture->getById('msg-1'), $first);
+        Assert::same($this->fixture->getById('msg-2'), $second);
+    }
+
+    public function saveBatchWithEmptyListChangesNothing(): void
+    {
+        $this->fixture->saveBatch([]);
+
+        Assert::count($this->fixture, 0);
+    }
+
+    public function findFailedReturnsOnlyFailedMessages(): void
+    {
+        foreach (OutboxStatus::cases() as $status) {
+            $this->fixture->save(
+                OutboxMessageBuilder::create()->withId('msg-' . $status->value)->withStatus($status)->build(),
+            );
+        }
+
+        $failed = $this->fixture->findFailed();
+
+        Assert::count($failed, 1);
+        Assert::same($failed[0]->getId(), 'msg-failed');
+    }
+
+    public function findFailedFiltersByTypeAndRespectsLimit(): void
+    {
+        foreach (['a', 'b', 'c'] as $index => $type) {
+            $this->fixture->save(
+                OutboxMessageBuilder::create()->withId('msg-' . $index)->withType($type)->withStatus(OutboxStatus::Failed)->build(),
+            );
+            $this->fixture->save(
+                OutboxMessageBuilder::create()->withId('msg-' . $index . '-second')->withType($type)->withStatus(OutboxStatus::Failed)->build(),
+            );
+        }
+
+        $ids = static fn(array $messages): array => array_map(static fn(OutboxMessage $m): string => $m->getId(), $messages);
+
+        Assert::same($ids($this->fixture->findFailed(types: ['b', 'c'])), ['msg-1', 'msg-1-second', 'msg-2', 'msg-2-second']);
+        Assert::same($ids($this->fixture->findFailed(types: ['b', 'c'], limit: 3)), ['msg-1', 'msg-1-second', 'msg-2']);
+        Assert::same($ids($this->fixture->findFailed(limit: 1)), ['msg-0']);
+        Assert::count($this->fixture->findFailed(types: ['zzz']), 0);
+    }
+
+    public function findFailedSkipsANonFailedMessageThatPrecedesAFailedOne(): void
+    {
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('msg-2')->withStatus(OutboxStatus::Failed)->build());
+
+        Assert::same($this->fixture->findFailed(limit: 1)[0]->getId(), 'msg-2');
+    }
+
+    public function requeueMovesAFailedMessageBackToPendingWithAttemptsReset(): void
+    {
+        $failed = OutboxMessageBuilder::create()
+            ->withId('msg-1')
+            ->withStatus(OutboxStatus::Failed)
+            ->withAttempts(3)
+            ->withLastAttemptAt(new DateTimeImmutable('2026-06-01 11:00:00'))
+            ->withAggregateId('order-42')
+            ->build();
+        $this->fixture->save($failed);
+
+        Assert::true($this->fixture->requeue($failed));
+
+        $stored = $this->fixture->getById('msg-1');
+        Assert::notNull($stored);
+        Assert::same($stored->getStatus(), OutboxStatus::Pending);
+        Assert::same($stored->getAttempts(), 0);
+        Assert::null($stored->getLastAttemptAt());
+        Assert::same($stored->getAggregateId(), 'order-42');
+        Assert::same($stored->getCreatedAt(), $failed->getCreatedAt());
+    }
+
+    public function requeueDecidesOnTheStoredStatusNotTheArgument(): void
+    {
+        // The argument may be a stale snapshot: what matters is what the
+        // storage holds now.
+        $stale = OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Failed)->withAttempts(3)->build();
+        $this->fixture->save($stale->withStatus(OutboxStatus::Processing));
+
+        Assert::false($this->fixture->requeue($stale));
+        Assert::same($this->fixture->getById('msg-1')?->getStatus(), OutboxStatus::Processing);
+        Assert::same($this->fixture->getById('msg-1')?->getAttempts(), 3);
+
+        $this->fixture->save($stale->withStatus(OutboxStatus::Pending));
+        $this->fixture->markFailed($stale->withStatus(OutboxStatus::Pending));
+
+        Assert::true($this->fixture->requeue($stale->withStatus(OutboxStatus::Published)));
+        Assert::same($this->fixture->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    #[DataProvider('nonFailedStatusProvider')]
+    public function requeueLeavesANonFailedMessageUntouched(OutboxStatus $status): void
+    {
+        $message = OutboxMessageBuilder::create()->withId('msg-1')->withStatus($status)->withAttempts(2)->build();
+        $this->fixture->save($message);
+
+        Assert::false($this->fixture->requeue($message));
+        Assert::same($this->fixture->getById('msg-1'), $message);
+    }
+
+    public static function nonFailedStatusProvider(): iterable
+    {
+        yield 'pending' => [OutboxStatus::Pending];
+        yield 'processing' => [OutboxStatus::Processing];
+        yield 'published' => [OutboxStatus::Published];
+    }
+
+    public function requeueOfAnUnknownMessageIsFalse(): void
+    {
+        $message = OutboxMessageBuilder::create()->withId('ghost')->withStatus(OutboxStatus::Failed)->build();
+
+        Assert::false($this->fixture->requeue($message));
+        Assert::count($this->fixture, 0);
+    }
+
+    public function statsOfAnEmptyStorageAreAllZero(): void
+    {
+        $stats = $this->fixture->stats();
+
+        Assert::same([$stats->pending, $stats->processing, $stats->published, $stats->failed], [0, 0, 0, 0]);
+        Assert::null($stats->oldestPendingCreatedAt);
+    }
+
+    public function statsCountEveryStatusAndFindTheOldestPending(): void
+    {
+        $older = new DateTimeImmutable('2026-06-01 09:00:00');
+        $newer = new DateTimeImmutable('2026-06-01 10:00:00');
+        $oldestButNotPending = new DateTimeImmutable('2026-06-01 08:00:00');
+
+        // Saved newest first, so "oldest" is not "first saved".
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('p-new')->withCreatedAt($newer)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('p-old')->withCreatedAt($older)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('f')->withCreatedAt($oldestButNotPending)->withStatus(OutboxStatus::Failed)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('x1')->withStatus(OutboxStatus::Processing)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('x2')->withStatus(OutboxStatus::Processing)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('pub')->withStatus(OutboxStatus::Published)->build());
+
+        $stats = $this->fixture->stats();
+
+        Assert::same($stats->pending, 2);
+        Assert::same($stats->processing, 2);
+        Assert::same($stats->published, 1);
+        Assert::same($stats->failed, 1);
+        Assert::same($stats->oldestPendingCreatedAt, $older);
+    }
+
+    public function statsKeepTheFirstOfTwoPendingMessagesCreatedAtTheSameInstant(): void
+    {
+        // Equal timestamps as two objects: a strict "earlier than" keeps the
+        // one already found, so the answer is stable under save order.
+        $first = new DateTimeImmutable('2026-06-01 09:00:00');
+        $second = new DateTimeImmutable('2026-06-01 09:00:00');
+
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('p-1')->withCreatedAt($first)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('p-2')->withCreatedAt($second)->build());
+
+        Assert::same($this->fixture->stats()->oldestPendingCreatedAt, $first);
+    }
+
+    public function statsReportTheEarlierOfTwoPendingTimestampsWhateverTheSaveOrder(): void
+    {
+        $older = new DateTimeImmutable('2026-06-01 09:00:00');
+        $newer = new DateTimeImmutable('2026-06-01 10:00:00');
+
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('p-old')->withCreatedAt($older)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('p-new')->withCreatedAt($newer)->build());
+
+        Assert::same($this->fixture->stats()->oldestPendingCreatedAt, $older);
+    }
+
     /**
      * Model-based test: under any interleaving of save, claim, markPublished and
      * markFailed, every message's stored status tracks a simple model (the list
@@ -480,13 +662,27 @@ final class InMemoryStorageTest
         // under half its share, so a seed cannot trip it.
         Classify::cover($kinds !== [] && !isset($kinds[ClaimCommand::class]), 'never claimed', 15.0);
         Classify::cover($kinds !== [] && !isset($kinds[PublishCommand::class]), 'never published', 15.0);
-        Classify::cover(\count($kinds) === 4, 'all four commands present', 10.0);
+        Classify::cover(\count($kinds) === 5, 'all five commands present', 5.0);
+        Classify::cover(isset($kinds[RequeueCommand::class], $kinds[FailCommand::class]), 'requeue after fail possible', 10.0);
 
         StateMachine::check($sequence, static fn(): OutboxHarness => $harness);
 
         // findPending() must agree with the per-message statuses read via getById().
-        $pending = count(array_filter($harness->statuses(), static fn(string $status): bool => $status === 'pending'));
+        $statuses = $harness->statuses();
+        $pending = count(array_filter($statuses, static fn(string $status): bool => $status === 'pending'));
         Assert::same($harness->pendingCount(), $pending);
+
+        // stats() is the same information aggregated: one count per status,
+        // and the oldest Pending message is the first one in save order that
+        // is still Pending, since createdAt increases with every save.
+        $stats = $harness->stats();
+        $counted = array_count_values($statuses);
+        Assert::same($stats->pending, $counted['pending'] ?? 0);
+        Assert::same($stats->processing, $counted['processing'] ?? 0);
+        Assert::same($stats->published, $counted['published'] ?? 0);
+        Assert::same($stats->failed, $counted['failed'] ?? 0);
+        Assert::same($stats->total(), count($statuses));
+        Assert::same($stats->oldestPendingCreatedAt?->getTimestamp(), $harness->oldestPendingCreatedAt()?->getTimestamp());
     }
 
     /** @return array<string, ArbitraryInterface> */
@@ -503,6 +699,7 @@ final class InMemoryStorageTest
             Gen::constant(new ClaimCommand()),
             Gen::map(Gen::intBetween(0, 4), static fn(int $index): PublishCommand => new PublishCommand($index)),
             Gen::map(Gen::intBetween(0, 4), static fn(int $index): FailCommand => new FailCommand($index)),
+            Gen::map(Gen::intBetween(0, 4), static fn(int $index): RequeueCommand => new RequeueCommand($index)),
         ]))];
     }
 }
