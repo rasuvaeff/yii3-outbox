@@ -16,6 +16,9 @@ composer require rasuvaeff/yii3-outbox
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
 - `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
+- `Processor` claims **every** type unless constructed with `types: [...]`. On a storage shared with another consumer that claims by type (e.g. `yii3-outbox-clickhouse`), an unscoped `Processor` acknowledges that consumer's messages — scope each processor to the types it owns.
+- `PublishException::terminal(...)` (or `terminal: true`) marks the message `Failed` at once, whatever the attempt count; a plain `PublishException` is retried per `RetryPolicy`.
+- Optional storage capabilities, each an interface extending `StorageInterface` and detected with `instanceof`: `BatchSavingStorageInterface::saveBatch()` (used by `Outbox::recordMany()`), `RequeueableStorageInterface::findFailed()/requeue()` (used by `Outbox::requeueFailed()`), `StatsAwareStorageInterface::stats(): OutboxStats`. `InMemoryStorage` implements all of them.
 - A storage may implement `RetryAwareStorageInterface` (extends `StorageInterface`); `Processor` then claims via `claimReady()` and messages still in backoff are never claimed. Without it, `Processor` falls back to `claim()` and filters in PHP — same result, two writes per backing-off message per iteration.
 - A storage may implement `BatchAcknowledgingStorageInterface` (extends `StorageInterface`): `markPublishedBatch(list<OutboxMessage>)` marks them all `Published` in one statement. Batching consumers (`yii3-outbox-clickhouse`) use it via `instanceof` and fall back to per-message `markPublished()`. Keep-vs-delete of acknowledged rows is the storage's policy and must apply to `markPublished()` too.
 - Failed publish keeps message as `Pending` if retries remain; marks `Failed` when exhausted.
@@ -56,6 +59,30 @@ interface MessageIdGeneratorInterface
     /** @return non-empty-string */
     public function generate(): string;
 }
+
+use Rasuvaeff\Yii3Outbox\OutboxMessageDraft;
+
+// several messages: one clock read; saveBatch() when the storage is a
+// BatchSavingStorageInterface, one save() each otherwise; [] touches nothing
+$messages = $outbox->recordMany([
+    new OutboxMessageDraft(type: 'order.created', payload: $json, aggregateId: 'order-42'),
+    new OutboxMessageDraft(type: 'order.paid', payload: $json, id: $event->getId()),
+]); // list<OutboxMessage>, order preserved
+
+// Failed -> Pending with attempts reset; needs RequeueableStorageInterface,
+// LogicException otherwise. Returns how many moved.
+$moved = $outbox->requeueFailed(types: ['order.created'], limit: 500);
+```
+
+### OutboxMessageDraft
+
+```php
+new OutboxMessageDraft(
+    type: 'order.created',   // non-empty
+    payload: $json,
+    aggregateId: 'order-42', // optional
+    id: $event->getId(),     // optional, non-empty when given; omitted => generator
+);
 ```
 
 ### OutboxMessage
@@ -133,6 +160,53 @@ interface BatchAcknowledgingStorageInterface extends StorageInterface
 }
 ```
 
+### BatchSavingStorageInterface
+
+Optional. `Outbox::recordMany()` uses it when present.
+
+```php
+interface BatchSavingStorageInterface extends StorageInterface
+{
+    // Same contract as save(), one statement. Empty list is a no-op.
+    /** @param list<OutboxMessage> $messages */
+    public function saveBatch(array $messages): void;
+}
+```
+
+### RequeueableStorageInterface
+
+Optional. `Outbox::requeueFailed()` drives it.
+
+```php
+interface RequeueableStorageInterface extends StorageInterface
+{
+    /** @param list<string> $types  @return list<OutboxMessage> Failed messages, oldest first where ordered */
+    public function findFailed(array $types = [], int $limit = 1000): array;
+
+    // Failed -> Pending, attempts 0, lastAttemptAt null (OutboxMessage::withAttemptsReset()).
+    // false, and nothing changed, when the storage no longer holds the message as Failed.
+    public function requeue(OutboxMessage $message): bool;
+}
+```
+
+### StatsAwareStorageInterface / OutboxStats
+
+Optional. One aggregate query; a gauge, not a ledger.
+
+```php
+interface StatsAwareStorageInterface extends StorageInterface
+{
+    public function stats(): OutboxStats;
+}
+
+$stats = $storage->stats();
+$stats->pending; $stats->processing; $stats->published; $stats->failed; // int, each >= 0
+$stats->oldestPendingCreatedAt;           // ?DateTimeImmutable, null when nothing pending
+$stats->total();                          // int
+$stats->countOf(OutboxStatus::Failed);    // int
+$stats->oldestPendingAgeSeconds($now);    // ?int, never negative
+```
+
 ### RetryAwareStorageInterface
 
 Optional. Implement it when the backend can apply the retry policy inside the
@@ -175,6 +249,12 @@ Throw `PublishException` on failure:
 
 ```php
 throw new PublishException(message: 'Failed', outboxMessage: $message, previous: $e);
+
+// no retry can fix this (410 Gone, payload rejected): Failed at once
+throw PublishException::terminal(message: 'Endpoint gone', outboxMessage: $message, previous: $e);
+
+$e->getOutboxMessage(); // OutboxMessage
+$e->isTerminal();       // bool
 ```
 
 ### RetryPolicy
@@ -201,6 +281,7 @@ $processor = new Processor(
     clock: $clock,
     batchSize: 100,        // optional
     logger: $logger,       // optional, PSR-3
+    types: ['order.created', 'order.paid'], // optional; [] (default) = every type
 );
 
 $result = $processor->process();
@@ -238,6 +319,10 @@ $storage->findPending(limit: 10);
 $storage->getById($id);
 $storage->count();  // implements Countable, so count($storage) works too
 $storage->clear();
+$storage->saveBatch([$a, $b]);
+$storage->findFailed(types: ['x'], limit: 10);
+$storage->requeue($failedMessage); // bool
+$storage->stats();                 // OutboxStats
 ```
 
 Test double only — it holds messages in process memory and offers no

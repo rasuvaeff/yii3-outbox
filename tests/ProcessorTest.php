@@ -237,9 +237,12 @@ final class ProcessorTest
         $processor->process();
 
         verify(fn() => $logger->warning(Arg::any(), Arg::any()), times: 1);
-        Assert::same($this->warningContexts->last()['messageId'], 'msg-1');
-        Assert::same($this->warningContexts->last()['attempts'], 1);
-        Assert::same($this->warningContexts->last()['error'], 'Publish failed');
+        Assert::same($this->warningContexts->last(), [
+            'messageId' => 'msg-1',
+            'attempts' => 1,
+            'terminal' => false,
+            'error' => 'Publish failed',
+        ]);
     }
 
     public function skipsAlreadyPublished(): void
@@ -1003,5 +1006,233 @@ final class ProcessorTest
         $result = $this->processor->process();
 
         Assert::same($result->total(), 0);
+    }
+
+    // --- type scope -------------------------------------------------------
+
+    private function saveTyped(string $id, string $type, InMemoryStorage $storage): void
+    {
+        $storage->save(OutboxMessageBuilder::create()->withId($id)->withType($type)->withStatus(OutboxStatus::Pending)->build());
+    }
+
+    public function rejectsAnEmptyTypeInTheScope(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessage('Message type must not be empty');
+
+        new Processor(
+            storage: $this->storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            types: ['order.created', ''],
+        );
+    }
+
+    public function withoutAScopeEveryTypeIsClaimed(): void
+    {
+        [$storage, $inner] = $this->plainStorage();
+        $this->saveTyped('a', 'order.created', $inner);
+        $this->saveTyped('b', 'ab.exposure', $inner);
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+        );
+
+        $result = $processor->process();
+
+        verify(fn() => $storage->claim([], 100), times: 1);
+        Assert::same($result->published, 2);
+        Assert::same($this->publishedIds(), ['a', 'b']);
+    }
+
+    public function aScopedProcessorClaimsOnlyItsTypesFromAPlainStorage(): void
+    {
+        [$storage, $inner] = $this->plainStorage();
+        $this->saveTyped('a', 'order.created', $inner);
+        $this->saveTyped('b', 'ab.exposure', $inner);
+        $this->saveTyped('c', 'order.paid', $inner);
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            batchSize: 7,
+            types: ['order.created', 'order.paid'],
+        );
+
+        $result = $processor->process();
+
+        verify(fn() => $storage->claim(['order.created', 'order.paid'], 7), times: 1);
+        Assert::same($result->published, 2);
+        Assert::same($this->publishedIds(), ['a', 'c']);
+        Assert::same($inner->getById('b')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($inner->getById('a')?->getStatus(), OutboxStatus::Published);
+    }
+
+    public function aScopedProcessorClaimsOnlyItsTypesFromARetryAwareStorage(): void
+    {
+        [$storage, $inner] = $this->retryAwareStorage();
+        $this->saveTyped('a', 'order.created', $inner);
+        $this->saveTyped('b', 'ab.exposure', $inner);
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            batchSize: 7,
+            types: ['order.created'],
+        );
+
+        $result = $processor->process();
+
+        verify(fn() => $storage->claimReady(Arg::any(), 3, ['order.created'], 7), times: 1);
+        Assert::same($result->published, 1);
+        Assert::same($this->publishedIds(), ['a']);
+        Assert::same($inner->getById('b')?->getStatus(), OutboxStatus::Pending);
+    }
+
+    /**
+     * Two processors over one storage, each scoped to its own types, together
+     * publish everything exactly once and neither touches the other's
+     * messages — the whole point of the scope.
+     *
+     * @param list<string> $types every message's type, in save order
+     */
+    #[Property(runs: 200)]
+    public function disjointScopesPartitionTheStorage(array $types, bool $retryAware): void
+    {
+        $inner = new InMemoryStorage();
+        foreach ($types as $index => $type) {
+            $this->saveTyped('m' . $index, $type, $inner);
+        }
+        $storage = $retryAware ? $inner : Understudy::delegate(StorageInterface::class, $inner);
+
+        $published = [];
+        $publisher = Understudy::for(PublisherInterface::class);
+        when(fn() => $publisher->publish(Arg::any()))->answers(static function (Invocation $call) use (&$published): void {
+            $published[] = $call->args[0]->getType();
+        });
+
+        $scopes = [['a'], ['b', 'c']];
+        $results = [];
+        foreach ($scopes as $scope) {
+            $results[] = (new Processor(
+                storage: $storage,
+                publisher: $publisher,
+                retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+                clock: $this->clock,
+                batchSize: 100,
+                types: $scope,
+            ))->process();
+        }
+
+        $counted = array_count_values($types);
+        Classify::cover(($counted['d'] ?? 0) > 0, 'unowned type present', 30.0);
+
+        Assert::same($results[0]->published, $counted['a'] ?? 0);
+        Assert::same($results[1]->published, ($counted['b'] ?? 0) + ($counted['c'] ?? 0));
+        $expectedPublished = $counted;
+        unset($expectedPublished['d']);
+        $actualPublished = array_count_values($published);
+        ksort($expectedPublished);
+        ksort($actualPublished);
+        Assert::same($actualPublished, $expectedPublished);
+
+        foreach ($types as $index => $type) {
+            $status = $inner->getById('m' . $index)?->getStatus();
+            Assert::same($status, $type === 'd' ? OutboxStatus::Pending : OutboxStatus::Published);
+        }
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function disjointScopesPartitionTheStorageGenerators(): array
+    {
+        return [
+            'types' => Gen::arrayOf(Gen::elements(['a', 'b', 'c', 'd']), maxSize: 12),
+            'retryAware' => Gen::bool(),
+        ];
+    }
+
+    // --- terminal failures ------------------------------------------------
+
+    public function aTerminalFailureMarksTheMessageFailedWithAttemptsToSpare(): void
+    {
+        when(fn() => $this->publisher->publish(Arg::any()))->answers(
+            fn(Invocation $call) => throw PublishException::terminal(message: '410 Gone', outboxMessage: $call->args[0]),
+        );
+        $this->storage->save(OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build());
+        $this->storage->save(OutboxMessageBuilder::create()->withId('msg-2')->withStatus(OutboxStatus::Pending)->build());
+        $logger = $this->logger();
+        $processor = new Processor(
+            storage: $this->storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+            logger: $logger,
+        );
+
+        $result = $processor->process();
+
+        Assert::same($result->failed, 2);
+        Assert::same($result->published, 0);
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Failed);
+        Assert::same($this->storage->getById('msg-1')?->getAttempts(), 1);
+        Assert::same($this->storage->getById('msg-2')?->getStatus(), OutboxStatus::Failed);
+        Assert::same($this->warningMessages->all(), ['Failed to publish outbox message', 'Failed to publish outbox message']);
+        Assert::same($this->warningContexts->all()[0], [
+            'messageId' => 'msg-1',
+            'attempts' => 1,
+            'terminal' => true,
+            'error' => '410 Gone',
+        ]);
+        verify(fn() => $logger->error(Arg::any(), Arg::any()), never: true);
+    }
+
+    public function aTerminalFailureIsNotRetriedOnTheNextRun(): void
+    {
+        when(fn() => $this->publisher->publish(Arg::any()))->answers(
+            fn(Invocation $call) => throw PublishException::terminal(message: '410 Gone', outboxMessage: $call->args[0]),
+        );
+        $this->storage->save(OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build());
+
+        $this->processor->process();
+        $second = $this->processor->process();
+
+        Assert::same($second->total(), 0);
+        Assert::same($this->publishedIds(), ['msg-1']);
+    }
+
+    public function aNonTerminalFailureStillGoesThroughTheRetryPolicy(): void
+    {
+        $this->failEveryPublish();
+        $this->storage->save(OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build());
+
+        $this->processor->process();
+
+        Assert::same($this->storage->getById('msg-1')?->getStatus(), OutboxStatus::Pending);
+        Assert::same($this->storage->getById('msg-1')?->getAttempts(), 1);
+    }
+
+    public function aTerminalFailureUsesMarkFailedNotSave(): void
+    {
+        [$storage, $inner] = $this->plainStorage();
+        when(fn() => $this->publisher->publish(Arg::any()))->answers(
+            fn(Invocation $call) => throw PublishException::terminal(message: '410 Gone', outboxMessage: $call->args[0]),
+        );
+        $inner->save(OutboxMessageBuilder::create()->withId('msg-1')->withStatus(OutboxStatus::Pending)->build());
+        $processor = new Processor(
+            storage: $storage,
+            publisher: $this->publisher,
+            retryPolicy: new RetryPolicy(maxAttempts: 3, delaySeconds: 0),
+            clock: $this->clock,
+        );
+
+        $processor->process();
+
+        verify(fn() => $storage->markFailed(Arg::which('getId', 'msg-1')), times: 1);
+        verify(fn() => $storage->save(Arg::any()), never: true);
+        verify(fn() => $storage->markPublished(Arg::any()), never: true);
     }
 }

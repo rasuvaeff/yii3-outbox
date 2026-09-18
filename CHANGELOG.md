@@ -1,5 +1,43 @@
 # Changelog
 
+## 1.7.0 — 2026-09-18
+
+### Added
+
+- `Processor` takes an optional type scope: `new Processor(..., types: ['order.created'])`
+  forwards the list to `claim()` / `claimReady()`, so several consumers can
+  share one storage without one of them acknowledging what another was
+  supposed to deliver. The default `[]` keeps claiming every type. An empty
+  string in the scope is rejected with `InvalidArgumentException` (#26).
+- `PublishException::terminal()` (and a `terminal: false` constructor
+  parameter, `isTerminal()` accessor): a publisher that knows no retry can fix
+  a failure — the receiver is gone, the payload was rejected as malformed —
+  says so, and `Processor` marks the message `Failed` at once instead of
+  spending the remaining attempts. The warning log context carries
+  `terminal` (#27).
+- `RequeueableStorageInterface` (`findFailed()`, `requeue()`),
+  `OutboxMessage::withAttemptsReset()` and `Outbox::requeueFailed()`: a
+  `Failed` message can be put back to `Pending` with its attempts reset once
+  the cause is fixed. `requeue()` only moves a message the storage currently
+  holds as `Failed` and returns whether it did (#28).
+- `StatsAwareStorageInterface::stats()` returning `OutboxStats` — one count
+  per status plus the oldest pending message's `createdAt`, with
+  `total()`, `countOf()` and `oldestPendingAgeSeconds()` for alerting (#29).
+- `BatchSavingStorageInterface::saveBatch()`, `OutboxMessageDraft` and
+  `Outbox::recordMany()`: several messages recorded with one clock read and,
+  when the storage supports it, one write; falls back to one `save()` per
+  message otherwise (#30).
+- `InMemoryStorage` implements all three new interfaces.
+
+### Fixed
+
+- README: the "Recording a message" example used `$storage` without defining
+  it (#31).
+- `composer.json` declares `extra.branch-alias` (`dev-master` → `1.x-dev`) so
+  the family's config-merge harness can resolve the package from a path
+  repository (#32); `testo/bridge-infection` is `^0.1.6` like everywhere
+  else, not an exact pin (#31).
+
 ## 1.6.0 — 2026-09-16
 
 ### Added

@@ -15,7 +15,7 @@ use Traversable;
  *
  * @implements IteratorAggregate<string, OutboxMessage>
  */
-final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowledgingStorageInterface, IteratorAggregate, Countable
+final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowledgingStorageInterface, BatchSavingStorageInterface, RequeueableStorageInterface, StatsAwareStorageInterface, IteratorAggregate, Countable
 {
     /** @var array<string, OutboxMessage> */
     private array $messages = [];
@@ -27,12 +27,36 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
     }
 
     #[\Override]
+    public function saveBatch(array $messages): void
+    {
+        foreach ($messages as $message) {
+            $this->save($message);
+        }
+    }
+
+    #[\Override]
     public function findPending(array $types = [], int $limit = 1000): array
     {
-        $pending = [];
+        return $this->findByStatus(OutboxStatus::Pending, $types, $limit);
+    }
+
+    #[\Override]
+    public function findFailed(array $types = [], int $limit = 1000): array
+    {
+        return $this->findByStatus(OutboxStatus::Failed, $types, $limit);
+    }
+
+    /**
+     * @param list<string> $types
+     *
+     * @return list<OutboxMessage>
+     */
+    private function findByStatus(OutboxStatus $status, array $types, int $limit): array
+    {
+        $found = [];
 
         foreach ($this->messages as $message) {
-            if ($message->getStatus() !== OutboxStatus::Pending) {
+            if ($message->getStatus() !== $status) {
                 continue;
             }
 
@@ -40,14 +64,59 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
                 continue;
             }
 
-            $pending[] = $message;
+            $found[] = $message;
 
-            if (count($pending) >= $limit) {
+            if (count($found) >= $limit) {
                 break;
             }
         }
 
-        return $pending;
+        return $found;
+    }
+
+    #[\Override]
+    public function requeue(OutboxMessage $message): bool
+    {
+        $id = $message->getId();
+        $stored = $this->messages[$id] ?? null;
+
+        if ($stored === null || $stored->getStatus() !== OutboxStatus::Failed) {
+            return false;
+        }
+
+        $this->messages[$id] = $stored->withAttemptsReset();
+
+        return true;
+    }
+
+    #[\Override]
+    public function stats(): OutboxStats
+    {
+        $counts = [
+            OutboxStatus::Pending->value => 0,
+            OutboxStatus::Processing->value => 0,
+            OutboxStatus::Published->value => 0,
+            OutboxStatus::Failed->value => 0,
+        ];
+        $oldestPending = null;
+
+        foreach ($this->messages as $message) {
+            $counts[$message->getStatus()->value]++;
+
+            if ($message->getStatus() === OutboxStatus::Pending
+                && ($oldestPending === null || $message->getCreatedAt() < $oldestPending)
+            ) {
+                $oldestPending = $message->getCreatedAt();
+            }
+        }
+
+        return new OutboxStats(
+            pending: $counts[OutboxStatus::Pending->value],
+            processing: $counts[OutboxStatus::Processing->value],
+            published: $counts[OutboxStatus::Published->value],
+            failed: $counts[OutboxStatus::Failed->value],
+            oldestPendingCreatedAt: $oldestPending,
+        );
     }
 
     #[\Override]

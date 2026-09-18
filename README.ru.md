@@ -41,6 +41,7 @@ $clock = new class implements ClockInterface {
     public function now(): DateTimeImmutable { return new DateTimeImmutable(); }
 };
 
+$storage = new InMemoryStorage(); // для реальной базы — rasuvaeff/yii3-outbox-db
 $outbox = new Outbox(storage: $storage, clock: $clock);
 
 $message = $outbox->record(
@@ -133,6 +134,26 @@ $outbox = new Outbox(storage: $storage, clock: $clock, idGenerator: new Uuid7IdG
 Пакет не поставляет реализацию UUID и не зависит ни от одной UUID-библиотеки:
 `id` в `rasuvaeff/yii3-outbox-db` — `VARCHAR(255)`, поэтому влезает любой
 формат, а выбор остаётся за вами.
+
+### Запись нескольких сообщений сразу
+
+Запрос, породивший пять событий, записывает пять сообщений. `recordMany()`
+принимает черновики — всё, что принимает `record()`, минус то, что outbox
+заполняет сам, — читает часы один раз, чтобы батч был одним моментом в
+истории outbox, и пишет их одним запросом, если хранилище —
+`BatchSavingStorageInterface` (см. [Сохранение батча одной записью](#сохранение-батча-одной-записью)),
+иначе — по одному `save()` на сообщение. Транзакционное обязательство то же,
+что у `record()`:
+
+```php
+use Rasuvaeff\Yii3Outbox\OutboxMessageDraft;
+
+$messages = $outbox->recordMany([
+    new OutboxMessageDraft(type: 'order.created', payload: $created, aggregateId: 'order-42'),
+    new OutboxMessageDraft(type: 'order.paid', payload: $paid, aggregateId: 'order-42', id: $paidEvent->getId()),
+]);
+// list<OutboxMessage> в заданном порядке; пустой список ничего не трогает
+```
 
 ### Реализация хранилища
 
@@ -285,6 +306,73 @@ final class DbStorage implements BatchAcknowledgingStorageInterface
 по-прежнему корректно — батчевый потребитель откатывается на
 `markPublished()` по одному.
 
+### Сохранение батча одной записью
+
+Зеркальное отражение на стороне записи. `recordMany()` вызывает `save()` на
+каждое сообщение; хранилище, способное выразить батч одним multi-row insert,
+реализует `BatchSavingStorageInterface`, и `recordMany()` им пользуется:
+
+```php
+use Rasuvaeff\Yii3Outbox\BatchSavingStorageInterface;
+
+final class DbStorage implements BatchSavingStorageInterface
+{
+    public function saveBatch(array $messages): void
+    {
+        // INSERT INTO outbox (...) VALUES (...), (...), (...)
+    }
+}
+```
+
+Транзакционный контракт — тот же, что у `save()`: через соединение
+приложения, внутри транзакции вызывающего. Пустой список — no-op.
+
+### Повторная постановка сбойных сообщений
+
+Сообщение попадает в `Failed`, когда исчерпаны попытки или паблишер объявил
+сбой терминальным. Когда причина устранена — получатель вернулся, баг в
+payload выкачен, — оператор хочет всё-таки опубликовать эти сообщения, а
+ничто в `StorageInterface` не умеет сдвинуть строку `Failed`. Хранилище,
+которое умеет, реализует `RequeueableStorageInterface`; `Outbox::requeueFailed()`
+им управляет:
+
+```php
+$moved = $outbox->requeueFailed(types: ['order.created'], limit: 500);
+// каждое Failed-сообщение этого типа снова Pending с обнулёнными попытками;
+// хранилище без этой возможности даёт LogicException
+```
+
+`requeue()` двигает только сообщение, которое хранилище *сейчас* держит как
+`Failed`, — то, до которого раньше добрался воркер или другой оператор,
+остаётся как есть и не считается. Интерфейс реализуют `InMemoryStorage` и
+`rasuvaeff/yii3-outbox-db`.
+
+### Наблюдение за очередью
+
+Только растущий `Processing` означает, что воркеры умирают посреди батча;
+только растущий `Failed` — что сломан паблишер. Хранилище, которое умеет
+дёшево считать, реализует `StatsAwareStorageInterface` и отвечает одним
+агрегирующим запросом:
+
+```php
+use Rasuvaeff\Yii3Outbox\StatsAwareStorageInterface;
+
+if ($storage instanceof StatsAwareStorageInterface) {
+    $stats = $storage->stats();
+    $stats->pending;                          // int
+    $stats->processing;                       // int
+    $stats->failed;                           // int
+    $stats->published;                        // int
+    $stats->total();                          // сумма
+    $stats->countOf(OutboxStatus::Failed);    // по case enum
+    $stats->oldestPendingCreatedAt;           // ?DateTimeImmutable
+    $stats->oldestPendingAgeSeconds($now);    // ?int — метрика для алерта
+}
+```
+
+Снимок — gauge, а не журнал: два вызова вокруг конкурентной записи могут
+разойтись, для health-check это нормально.
+
 ### Реализация паблишера
 
 ```php
@@ -309,6 +397,19 @@ final class RabbitPublisher implements PublisherInterface
 }
 ```
 
+Любой `PublishException` повторяется, пока `RetryPolicy` не исчерпает
+попытки. Когда паблишер знает, что повтор ничего не исправит — получатель
+исчез (410), payload отвергнут как невалидный, — он говорит об этом, и
+`Processor` сразу помечает сообщение `Failed`, вместо того чтобы тратить
+оставшиеся попытки на откладывание алерта:
+
+```php
+throw PublishException::terminal(
+    message: sprintf('Endpoint %s returned 410 Gone', $endpoint),
+    outboxMessage: $message,
+);
+```
+
 ### Обработка outbox
 
 ```php
@@ -330,11 +431,49 @@ $result = $processor->process();
 //                     RetryAwareStorageInterface, который их не захватывает
 ```
 
+### Общее хранилище для нескольких потребителей
+
+`Processor` забирает **все** ожидающие сообщения хранилища независимо от
+типа. На хранилище, которое делит с другим потребителем, забирающим по типу —
+`ClickHouseOutboxExporter` из `rasuvaeff/yii3-outbox-clickhouse`, второй
+`Processor` с другим паблишером, — это потеря данных: нескоупленный процессор
+забирает чужие сообщения, его паблишер делает с незнакомым типом что умеет
+(вебхук-паблишер без эндпоинтов молча подтверждает), и сообщение оказывается
+`Published` раньше, чем его увидит потребитель, для которого оно предназначено.
+
+Ограничивайте каждый процессор своими типами:
+
+```php
+$webhooks = new Processor(
+    storage: $storage,
+    publisher: $webhookPublisher,
+    retryPolicy: $policy,
+    clock: $clock,
+    types: ['order.created', 'order.paid'],
+);
+
+$broker = new Processor(
+    storage: $storage,
+    publisher: $rabbitPublisher,
+    retryPolicy: $policy,
+    clock: $clock,
+    types: ['inventory.reserved'],
+);
+```
+
+Скоуп пробрасывается в `claim()` / `claimReady()`, так что ограниченный
+процессор чужое сообщение даже не видит. Пустой скоуп (по умолчанию)
+по-прежнему забирает всё — правильно для типичного случая «одно хранилище,
+один потребитель».
+
 ### Поведение повторов
 
 При сбое публикации:
 - Если attempts < `maxAttempts` → сообщение остаётся `Pending`, будет повторено через `delaySeconds`
 - Если attempts >= `maxAttempts` → сообщение помечается `Failed` (терминальный статус)
+- Если паблишер бросил `PublishException::terminal()` → сообщение сразу
+  помечается `Failed` независимо от числа попыток; в warning-лог попадает
+  `terminal: true`
 
 Каждое заклеймленное батчем сообщение покидает `Processing`. Сообщение, которое
 пришло в claim с уже исчерпанными попытками — восстановленное из бэкапа или
@@ -396,6 +535,14 @@ $storage->clear();
 |---|---|
 | `__construct(storage, clock, idGenerator?)` | Основная точка входа |
 | `record(type, payload, aggregateId?, id?)` | Создаёт и сохраняет сообщение, возвращает `OutboxMessage`. Вызывать внутри бизнес-транзакции |
+| `recordMany(list<OutboxMessageDraft>)` | То же для нескольких сообщений: одно чтение часов, один `saveBatch()`, если хранилище — `BatchSavingStorageInterface`, иначе по одному `save()`. Возвращает `list<OutboxMessage>` в заданном порядке; `[]` ничего не трогает |
+| `requeueFailed(types = [], limit = 1000)` | Возвращает `Failed`-сообщения в `Pending` с обнулёнными попытками через `RequeueableStorageInterface`; возвращает число сдвинутых. `LogicException`, если хранилище не умеет |
+
+### OutboxMessageDraft
+
+| Свойство | Описание |
+|---|---|
+| `type`, `payload`, `aggregateId?`, `id?` | То, что принимает `record()`; `type` и `id` не могут быть пустыми. Потребляется `recordMany()` |
 
 ### StorageInterface
 
@@ -433,6 +580,42 @@ $storage->clear();
 |---|---|
 | `markPublishedBatch(messages)` | Помечает каждое сообщение списка `Published`, как сделал бы `markPublished()` для каждого, за минимально возможное число записей. Пустой список — no-op |
 
+### BatchSavingStorageInterface
+
+Расширяет `StorageInterface`. Опционально: реализовать, когда бэкенд умеет
+вставлять много строк одним запросом — см. [Сохранение батча одной записью](#сохранение-батча-одной-записью).
+
+| Метод | Описание |
+|---|---|
+| `saveBatch(messages)` | Сохраняет каждое сообщение по контракту `save()`. Пустой список — no-op |
+
+### RequeueableStorageInterface
+
+Расширяет `StorageInterface`. Опционально — см. [Повторная постановка сбойных сообщений](#повторная-постановка-сбойных-сообщений).
+
+| Метод | Описание |
+|---|---|
+| `findFailed(types = [], limit = 1000)` | `Failed`-сообщения, старые первыми там, где бэкенд держит порядок |
+| `requeue(message)` | `Failed` → `Pending` с обнулёнными попытками (`OutboxMessage::withAttemptsReset()`). Возвращает `false`, ничего не трогая, если хранилище уже не держит сообщение как `Failed` |
+
+### StatsAwareStorageInterface
+
+Расширяет `StorageInterface`. Опционально — см. [Наблюдение за очередью](#наблюдение-за-очередью).
+
+| Метод | Описание |
+|---|---|
+| `stats()` | Снимок `OutboxStats` |
+
+### OutboxStats
+
+| Свойство/Метод | Описание |
+|---|---|
+| `$pending`, `$processing`, `$published`, `$failed` | Счётчики; каждый неотрицательный |
+| `$oldestPendingCreatedAt` | `?DateTimeImmutable`; `null`, когда ничего не ожидает или бэкенд это не отслеживает |
+| `total()` | Сумма четырёх счётчиков |
+| `countOf(status)` | Счётчик для case `OutboxStatus` |
+| `oldestPendingAgeSeconds(now)` | Секунды с создания самого старого ожидающего сообщения, никогда не отрицательно; `null` без timestamp |
+
 ### OutboxMessage
 
 | Метод | Описание |
@@ -448,6 +631,7 @@ $storage->clear();
 | `getAggregateId()` | `?string` |
 | `withStatus(status)` | Возвращает новый экземпляр со статусом |
 | `withAttempt(at)` | Возвращает новый экземпляр с инкрементированными attempts и timestamp |
+| `withAttemptsReset()` | Возвращает новый экземпляр как никогда не пытавшийся: `Pending`, ноль попыток, без последней попытки. То, что сохраняет requeue |
 
 ### MessageIdGeneratorInterface
 
@@ -463,7 +647,7 @@ $storage->clear();
 | `Pending` | `'pending'` | Ожидает публикации, включая повторы с `attempts > 0` |
 | `Processing` | `'processing'` | Захвачено воркером; другой воркер его не возьмёт |
 | `Published` | `'published'` | Терминальный успех |
-| `Failed` | `'failed'` | Терминальная неудача, повторы исчерпаны |
+| `Failed` | `'failed'` | Терминальная неудача: повторы исчерпаны или паблишер объявил сбой терминальным. Сдвигается только requeue |
 
 ### RetryPolicy
 
@@ -478,8 +662,16 @@ $storage->clear();
 
 | Метод | Описание |
 |---|---|
-| `__construct(storage, publisher, retryPolicy, clock, batchSize, logger)` | Batch по умолчанию: 100 |
+| `__construct(storage, publisher, retryPolicy, clock, batchSize, logger, types)` | Batch по умолчанию: 100. `types` (`list<string>`, по умолчанию `[]` = все типы) ограничивает, что забирает этот процессор — см. [Общее хранилище для нескольких потребителей](#общее-хранилище-для-нескольких-потребителей) |
 | `process()` | Возвращает `ProcessingResult` |
+
+### PublishException
+
+| Метод | Описание |
+|---|---|
+| `__construct(message, outboxMessage, code = 0, previous = null, terminal = false)` | То, что паблишер бросает при сбое доставки; повторяется по `RetryPolicy` |
+| `terminal(message, outboxMessage, code = 0, previous = null)` | Статическая фабрика для сбоя, который повтор не исправит; `Processor` сразу помечает сообщение `Failed` |
+| `getOutboxMessage()`, `isTerminal()` | Аксессоры |
 
 ### ProcessingResult
 
