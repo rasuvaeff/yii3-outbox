@@ -55,7 +55,7 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
     {
         $found = [];
 
-        foreach ($this->messages as $message) {
+        foreach ($this->inClaimOrder() as $message) {
             if ($message->getStatus() !== $status) {
                 continue;
             }
@@ -157,7 +157,8 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
     {
         $claimed = [];
 
-        foreach ($this->messages as $id => $message) {
+        foreach ($this->inClaimOrder() as $message) {
+            $id = $message->getId();
             if ($message->getStatus() !== OutboxStatus::Pending) {
                 continue;
             }
@@ -180,6 +181,24 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
         }
 
         return $claimed;
+    }
+
+    /**
+     * The order a database storage hands messages out in: higher priority
+     * first, then oldest first. Insertion order breaks the remaining ties, so
+     * a priority-less outbox behaves exactly as before.
+     *
+     * @return list<OutboxMessage>
+     */
+    private function inClaimOrder(): array
+    {
+        $ordered = $this->messages;
+        usort(
+            $ordered,
+            static fn(OutboxMessage $a, OutboxMessage $b): int => [$b->getPriority(), $a->getCreatedAt()] <=> [$a->getPriority(), $b->getCreatedAt()],
+        );
+
+        return $ordered;
     }
 
     #[\Override]

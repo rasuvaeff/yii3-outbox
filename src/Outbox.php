@@ -37,18 +37,22 @@ final readonly class Outbox
      * @param ?string $id the domain event's identifier when this message mirrors
      *                    one — the generator is then not consulted, so republishing
      *                    the same event cannot produce two different message ids
+     * @param int $priority higher is claimed first, equal priorities keep
+     *                      `createdAt` order; see {@see OutboxMessageDraft}
      */
     public function record(
         string $type,
         string $payload,
         ?string $aggregateId = null,
         ?string $id = null,
+        int $priority = 0,
     ): OutboxMessage {
         $message = $this->draft(new OutboxMessageDraft(
             type: $type,
             payload: $payload,
             aggregateId: $aggregateId,
             id: $id,
+            priority: $priority,
         ));
 
         $this->storage->save($message);
@@ -136,6 +140,7 @@ final readonly class Outbox
             aggregateId: $draft->aggregateId,
             createdAt: $createdAt ?? $this->clock->now(),
             id: $draft->id ?? $this->idGenerator->generate(),
+            priority: $draft->priority,
         );
     }
 }

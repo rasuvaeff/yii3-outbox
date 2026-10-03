@@ -172,6 +172,20 @@ final class OutboxMessageTest
         );
     }
 
+    public function priorityDefaultsToZeroAndSurvivesEveryTransition(): void
+    {
+        $plain = OutboxMessage::create(type: 'order.created', payload: '{}');
+        Assert::same($plain->getPriority(), 0);
+
+        $urgent = OutboxMessage::create(type: 'audit.entry', payload: '{}', priority: 10);
+        $at = new DateTimeImmutable('2026-10-03 10:00:00');
+
+        Assert::same($urgent->getPriority(), 10);
+        Assert::same($urgent->withStatus(OutboxStatus::Processing)->getPriority(), 10);
+        Assert::same($urgent->withAttempt($at)->getPriority(), 10);
+        Assert::same($urgent->withAttempt($at)->withStatus(OutboxStatus::Failed)->withAttemptsReset()->getPriority(), 10);
+    }
+
     public function withAttemptsResetReturnsTheMessageAsNeverAttempted(): void
     {
         $createdAt = new DateTimeImmutable('2026-06-01 10:00:00');

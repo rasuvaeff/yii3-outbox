@@ -9,7 +9,7 @@ It provides a stateless core for storing messages in an outbox and publishing
 them reliably with retry policies. Namespace: `Rasuvaeff\Yii3Outbox`.
 
 Public API:
-- `Outbox` — facade: `record(type, payload, aggregateId?, id?)` → `OutboxMessage`
+- `Outbox` — facade: `record(type, payload, aggregateId?, id?, priority = 0)` → `OutboxMessage`
 - `MessageIdGeneratorInterface` — produces the message id when none is passed
 - `RandomHexIdGenerator` — default: 32 random hex characters
 - `OutboxMessage` — immutable message value object with `aggregateId` support
@@ -117,6 +117,13 @@ make release-check
   `save($msg->withStatus(Pending))` — nothing may stay `Processing`. Docs that
   show `findPending()` as a worker's fetch teach non-atomic polling; keep the
   distinction explicit in README/`llms.txt`.
+- **Claim order is `priority DESC, createdAt ASC`** (1.8.0). Strict, no aging:
+  a high-priority type that outpaces the consumer starves everything below it,
+  which is documented as the producer's responsibility (low-volume types only),
+  not something the core compensates for. Equal priorities keep the historical
+  time order, so the default `0` changes nothing. `InMemoryStorage::inClaimOrder()`
+  is the reference; a backend must hand out every eligible higher-priority
+  message before any lower one — a property test in `InMemoryStorageTest` pins it.
 - `findPending(array $types = [], int $limit = 1000)` is the read-only
   counterpart: it must return `Pending` messages with any attempt count —
   `RetryPolicy` filters which are ready for retry — but it locks and marks

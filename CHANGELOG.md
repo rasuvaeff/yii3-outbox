@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.8.0 — 2026-10-03
+
+### Added
+
+- Message priority: `OutboxMessageDraft`, `OutboxMessage::create()` and
+  `Outbox::record()` take `priority` (`int`, default 0);
+  `OutboxMessage::getPriority()` is kept by every `with*()` transition. A
+  storage claims higher priorities first, then oldest first — strict, no
+  aging — so a few low-volume messages (an audit entry) no longer wait behind
+  a bulk backlog (an HTTP journal) when the sink recovers. Equal priorities
+  keep the previous time order, so an outbox that never sets one behaves as
+  before. `InMemoryStorage` orders its claims and listings this way;
+  `rasuvaeff/yii3-outbox-db` 2.6 stores the column (#36).
+
 ## 1.7.0 — 2026-09-18
 
 ### Added

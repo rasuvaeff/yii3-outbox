@@ -46,6 +46,10 @@ interface StorageInterface
      * The caller must call markPublished(), markFailed(), or save($msg->withStatus(Pending))
      * for every claimed message — never leave a message in Processing indefinitely.
      *
+     * Order: higher {@see OutboxMessage::getPriority()} first, then oldest
+     * `createdAt` first — a backend must hand out every eligible message of a
+     * higher priority before any of a lower one.
+     *
      * @param list<string> $types restrict to these message types; empty = all types
      *
      * @return list<OutboxMessage>

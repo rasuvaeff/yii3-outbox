@@ -132,6 +132,26 @@ final class OutboxTest
         Assert::same($message->getAggregateId(), 'order-42');
     }
 
+    public function recordDefaultsPriorityToZeroAndPassesAnExplicitOne(): void
+    {
+        Assert::same($this->outbox->record(type: 'order.created', payload: '{}')->getPriority(), 0);
+
+        $message = $this->outbox->record(type: 'audit.entry', payload: '{}', priority: 10);
+
+        Assert::same($message->getPriority(), 10);
+        Assert::same($this->storage->getById($message->getId())?->getPriority(), 10);
+    }
+
+    public function recordManyKeepsEachDraftsPriority(): void
+    {
+        $messages = $this->outbox->recordMany([
+            new OutboxMessageDraft(type: 'http.exchange', payload: '{}'),
+            new OutboxMessageDraft(type: 'audit.entry', payload: '{}', priority: 10),
+        ]);
+
+        Assert::same(array_map(static fn(OutboxMessage $m): int => $m->getPriority(), $messages), [0, 10]);
+    }
+
     public function recordPersistsMessageInStorage(): void
     {
         $message = $this->outbox->record(type: 'test', payload: '{}');

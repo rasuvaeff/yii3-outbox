@@ -22,20 +22,23 @@ final class OutboxMessageDraftTest
             payload: '{"orderId": 42}',
             aggregateId: 'order-42',
             id: 'order-created-42',
+            priority: 10,
         );
 
         Assert::same($draft->type, 'order.created');
         Assert::same($draft->payload, '{"orderId": 42}');
         Assert::same($draft->aggregateId, 'order-42');
         Assert::same($draft->id, 'order-created-42');
+        Assert::same($draft->priority, 10);
     }
 
-    public function aggregateIdAndIdDefaultToNull(): void
+    public function aggregateIdAndIdDefaultToNullAndPriorityToZero(): void
     {
         $draft = new OutboxMessageDraft(type: 'order.created', payload: '{}');
 
         Assert::null($draft->aggregateId);
         Assert::null($draft->id);
+        Assert::same($draft->priority, 0);
     }
 
     public function throwsOnEmptyType(): void

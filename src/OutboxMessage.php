@@ -21,6 +21,7 @@ final readonly class OutboxMessage
         private int $attempts = 0,
         private ?DateTimeImmutable $lastAttemptAt = null,
         private ?string $aggregateId = null,
+        private int $priority = 0,
     ) {
         if ($id === '') {
             throw new InvalidArgumentException('Message id must not be empty');
@@ -45,6 +46,7 @@ final readonly class OutboxMessage
         ?string $aggregateId = null,
         ?DateTimeImmutable $createdAt = null,
         ?string $id = null,
+        int $priority = 0,
     ): self {
         return new self(
             id: $id ?? (new RandomHexIdGenerator())->generate(),
@@ -53,6 +55,7 @@ final readonly class OutboxMessage
             status: OutboxStatus::Pending,
             createdAt: $createdAt ?? new DateTimeImmutable(),
             aggregateId: $aggregateId,
+            priority: $priority,
         );
     }
 
@@ -96,6 +99,14 @@ final readonly class OutboxMessage
         return $this->aggregateId;
     }
 
+    /**
+     * Higher is claimed first; equal priorities keep `createdAt` order.
+     */
+    public function getPriority(): int
+    {
+        return $this->priority;
+    }
+
     public function withStatus(OutboxStatus $status): self
     {
         return new self(
@@ -107,6 +118,7 @@ final readonly class OutboxMessage
             attempts: $this->attempts,
             lastAttemptAt: $this->lastAttemptAt,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 
@@ -121,6 +133,7 @@ final readonly class OutboxMessage
             attempts: $this->attempts + 1,
             lastAttemptAt: $at,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 
@@ -137,6 +150,7 @@ final readonly class OutboxMessage
             status: OutboxStatus::Pending,
             createdAt: $this->createdAt,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 }

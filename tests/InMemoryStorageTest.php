@@ -315,6 +315,69 @@ final class InMemoryStorageTest
         Assert::same($this->fixture->findPending()[0]->getId(), 'order');
     }
 
+    public function claimHandsOutHigherPriorityFirstThenOldest(): void
+    {
+        $t0 = new DateTimeImmutable('2026-10-03 10:00:00');
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('bulk-old')->withCreatedAt($t0)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('urgent-new')->withPriority(10)->withCreatedAt($t0->modify('+2 seconds'))->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('urgent-old')->withPriority(10)->withCreatedAt($t0->modify('+1 second'))->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('bulk-new')->withCreatedAt($t0->modify('+3 seconds'))->build());
+
+        $ids = array_map(static fn(OutboxMessage $message): string => $message->getId(), $this->fixture->claim(limit: 3));
+
+        Assert::same($ids, ['urgent-old', 'urgent-new', 'bulk-old']);
+        Assert::same($this->fixture->findPending()[0]->getId(), 'bulk-new');
+    }
+
+    public function claimReadyKeepsPriorityOrderAmongEligibleMessages(): void
+    {
+        $t0 = new DateTimeImmutable('2026-10-03 10:00:00');
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('bulk')->withCreatedAt($t0)->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('urgent-in-backoff')->withPriority(10)->withCreatedAt($t0)->withAttempts(1)->withLastAttemptAt($t0->modify('+5 minutes'))->build());
+        $this->fixture->save(OutboxMessageBuilder::create()->withId('urgent')->withPriority(5)->withCreatedAt($t0->modify('+1 second'))->build());
+
+        $ids = array_map(
+            static fn(OutboxMessage $message): string => $message->getId(),
+            $this->fixture->claimReady(readyThreshold: $t0->modify('+1 minute'), maxAttempts: 3),
+        );
+
+        Assert::same($ids, ['urgent', 'bulk'], 'backoff still filters; the rest keeps priority order');
+    }
+
+    /**
+     * @param list<array{int, int}> $specs priority, createdAt offset in seconds
+     */
+    #[Property(runs: 200)]
+    public function claimOrderIsPriorityDescThenCreatedAtAsc(array $specs, int $limit): void
+    {
+        $t0 = new DateTimeImmutable('2026-10-03 10:00:00');
+        foreach ($specs as $index => [$priority, $offset]) {
+            $this->fixture->save(OutboxMessageBuilder::create()->withId('m' . $index)->withPriority($priority)->withCreatedAt($t0->modify(sprintf('+%d seconds', $offset)))->build());
+        }
+
+        $claimed = $this->fixture->claim(limit: $limit);
+        $keys = array_map(static fn(OutboxMessage $message): array => [-$message->getPriority(), $message->getCreatedAt()->getTimestamp()], $claimed);
+        $sorted = $keys;
+        sort($sorted);
+
+        Assert::same($keys, $sorted, 'claimed batch is sorted by (priority desc, createdAt asc)');
+        Assert::count($claimed, min($limit, count($specs)));
+        $lowestClaimed = $keys === [] ? null : end($keys);
+        foreach ($this->fixture->findPending() as $left) {
+            $leftKey = [-$left->getPriority(), $left->getCreatedAt()->getTimestamp()];
+            Assert::true($lowestClaimed === null || $leftKey >= $lowestClaimed, 'nothing left behind outranks what was claimed');
+        }
+    }
+
+    /** @return array<string, ArbitraryInterface> */
+    public static function claimOrderIsPriorityDescThenCreatedAtAscGenerators(): array
+    {
+        return [
+            'specs' => Gen::arrayOf(Gen::tuple(Gen::intBetween(-2, 12), Gen::intBetween(0, 30)), maxSize: 12),
+            'limit' => Gen::intBetween(1, 8),
+        ];
+    }
+
     public function claimSecondCallDoesNotReturnAlreadyClaimedMessages(): void
     {
         $this->fixture->save(OutboxMessageBuilder::create()->withId('a')->withStatus(OutboxStatus::Pending)->build());

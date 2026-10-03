@@ -16,6 +16,7 @@ composer require rasuvaeff/yii3-outbox
 - DB storage lives in `rasuvaeff/yii3-outbox-db`.
 - `OutboxMessage` is immutable. Use `withStatus()` and `withAttempt(DateTimeImmutable)`.
 - `Processor::process()` fetches messages via `claim()` (safe for concurrent workers) and increments attempts before calling publisher.
+- `priority` (default 0, kept by every `with*()`): a storage hands out higher priorities first, then oldest first; strict, no aging — give it only to low-volume types that never fill a claim, or everything below starves. `yii3-outbox-db` 2.6+ stores and orders it.
 - `Processor` claims **every** type unless constructed with `types: [...]`. On a storage shared with another consumer that claims by type (e.g. `yii3-outbox-clickhouse`), an unscoped `Processor` acknowledges that consumer's messages — scope each processor to the types it owns.
 - `PublishException::terminal(...)` (or `terminal: true`) marks the message `Failed` at once, whatever the attempt count; a plain `PublishException` is retried per `RetryPolicy`.
 - Optional storage capabilities, each an interface extending `StorageInterface` and detected with `instanceof`: `BatchSavingStorageInterface::saveBatch()` (used by `Outbox::recordMany()`), `RequeueableStorageInterface::findFailed()/requeue()` (used by `Outbox::requeueFailed()`), `StatsAwareStorageInterface::stats(): OutboxStats`. `InMemoryStorage` implements all of them.
@@ -82,6 +83,7 @@ new OutboxMessageDraft(
     payload: $json,
     aggregateId: 'order-42', // optional
     id: $event->getId(),     // optional, non-empty when given; omitted => generator
+    priority: 10,            // optional, default 0; higher is claimed first, then oldest first
 );
 ```
 
@@ -133,7 +135,8 @@ interface StorageInterface
     // findPending must return Pending messages, including those with attempts > 0
     // $types filters by message type (empty = all); lets several consumers share one outbox
     public function findPending(array $types = [], int $limit = 1000): array;
-    // claim atomically transitions up to $limit Pending messages to Processing and returns them.
+    // claim atomically transitions up to $limit Pending messages to Processing and returns them,
+    // ordered by priority DESC, createdAt ASC (equal priorities = time order, as before).
     // Use it (not findPending) for concurrent workers. Every claimed message must end in
     // markPublished(), markFailed(), or save($msg->withStatus(Pending)) — never stay Processing.
     public function claim(array $types = [], int $limit = 1000): array;
