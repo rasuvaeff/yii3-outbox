@@ -18,6 +18,7 @@ final class OutboxMessageBuilder
     private int $attempts = 0;
     private ?DateTimeImmutable $lastAttemptAt = null;
     private ?string $aggregateId = null;
+    private int $priority = 0;
 
     private function __construct()
     {
@@ -78,6 +79,13 @@ final class OutboxMessageBuilder
         return $this;
     }
 
+    public function withPriority(int $priority): self
+    {
+        $this->priority = $priority;
+
+        return $this;
+    }
+
     public function build(): OutboxMessage
     {
         return new OutboxMessage(
@@ -89,6 +97,7 @@ final class OutboxMessageBuilder
             attempts: $this->attempts,
             lastAttemptAt: $this->lastAttemptAt,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 }

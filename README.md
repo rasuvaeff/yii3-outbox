@@ -154,6 +154,35 @@ $messages = $outbox->recordMany([
 // list<OutboxMessage>, in the order given; an empty list touches nothing
 ```
 
+### Message priority
+
+One outbox usually carries both bulk traffic (an HTTP journal, thousands of
+rows a minute) and a few messages somebody is waiting for (an audit entry the
+admin expects to see within seconds). When the sink is down and a backlog
+builds up, a purely time-ordered claim drains the whole bulk backlog before
+those few messages. `priority` reorders the claim:
+
+```php
+$outbox->record(type: 'audit.entry', payload: $json, priority: 10);
+$outbox->record(type: 'http.exchange', payload: $json);               // priority 0
+```
+
+A storage hands out messages by `priority` descending, then `createdAt`
+ascending — every eligible message of a higher priority before any of a lower
+one; equal priorities keep the old time order, so an outbox that never sets a
+priority behaves exactly as before. The retry policy still applies: a
+high-priority message in its backoff window is not claimed.
+
+The order is strict — there is no aging. A type that produces messages faster
+than the consumer drains them would starve everything below it, so give a
+priority above 0 only to low-volume types that never fill a claim on their own.
+The range is `OutboxMessage::MIN_PRIORITY`..`MAX_PRIORITY` (-32768..32767, a
+`SMALLINT` in every SQL backend); outside it the draft or message throws
+`InvalidArgumentException`. `Serializer` carries the field; JSON without it
+deserializes with priority 0.
+`InMemoryStorage` orders this way; `rasuvaeff/yii3-outbox-db` 2.6+ stores the
+column and orders the claim.
+
 ### Implementing storage
 
 `claim()` is the primitive the whole polling loop rests on — `Processor` calls
@@ -526,7 +555,7 @@ $storage->clear();
 | Method | Description |
 |---|---|
 | `__construct(storage, clock, idGenerator?)` | Main entry point; default generator = `RandomHexIdGenerator` |
-| `record(type, payload, aggregateId?, id?)` | Create and persist message, returns `OutboxMessage`. `id` = the domain event's id; omitted → generator. Call inside the business transaction |
+| `record(type, payload, aggregateId?, id?, priority = 0)` | Create and persist message, returns `OutboxMessage`. `id` = the domain event's id; omitted → generator. `priority`: higher is claimed first — see [Message priority](#message-priority). Call inside the business transaction |
 | `recordMany(list<OutboxMessageDraft>)` | Same for several messages: one clock read, one `saveBatch()` when the storage is a `BatchSavingStorageInterface`, else one `save()` each. Returns `list<OutboxMessage>` in the order given; `[]` touches nothing |
 | `requeueFailed(types = [], limit = 1000)` | Moves `Failed` messages back to `Pending` with attempts reset through `RequeueableStorageInterface`; returns how many moved. `LogicException` when the storage cannot requeue |
 
@@ -534,14 +563,14 @@ $storage->clear();
 
 | Property | Description |
 |---|---|
-| `type`, `payload`, `aggregateId?`, `id?` | What `record()` takes; `type` and `id` must not be empty. Consumed by `recordMany()` |
+| `type`, `payload`, `aggregateId?`, `id?`, `priority = 0` | What `record()` takes; `type` and `id` must not be empty. Consumed by `recordMany()` |
 
 ### StorageInterface
 
 | Method | Description |
 |---|---|
 | `save(message)` | Persist. Must commit with the business write — see [The transactional guarantee](#the-transactional-guarantee) |
-| `claim(types = [], limit = 1000)` | **Atomically** moves up to `limit` `Pending` messages to `Processing` and returns them. What `Processor` uses; safe for concurrent workers |
+| `claim(types = [], limit = 1000)` | **Atomically** moves up to `limit` `Pending` messages to `Processing` and returns them, higher `priority` first, then oldest first. What `Processor` uses; safe for concurrent workers |
 | `findPending(types = [], limit = 1000)` | Read-only listing of `Pending` messages. No atomicity — for dashboards, not for workers |
 | `markPublished(message)` | Terminal success |
 | `markFailed(message)` | Terminal failure |
@@ -612,7 +641,7 @@ Extends `StorageInterface`. Optional — see [Watching the backlog](#watching-th
 
 | Method | Description |
 |---|---|
-| `create(type, payload, aggregateId?, createdAt?, id?)` | Factory; `id` omitted → 32-char hex |
+| `create(type, payload, aggregateId?, createdAt?, id?, priority = 0)` | Factory; `id` omitted → 32-char hex |
 | `getId()` | Message ID (32-char hex) |
 | `getType()` | Message type |
 | `getPayload()` | Raw payload string |
@@ -621,6 +650,7 @@ Extends `StorageInterface`. Optional — see [Watching the backlog](#watching-th
 | `getAttempts()` | Number of publish attempts |
 | `getLastAttemptAt()` | `?DateTimeImmutable` |
 | `getAggregateId()` | `?string` |
+| `getPriority()` | `int`, default 0; higher is claimed first. Kept by every `with*()` |
 | `withStatus(status)` | Returns new instance with status |
 | `withAttempt(at)` | Returns new instance with incremented attempts and timestamp |
 | `withAttemptsReset()` | Returns new instance as never attempted: `Pending`, zero attempts, no last attempt. What a requeue stores |

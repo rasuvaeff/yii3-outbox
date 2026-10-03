@@ -12,6 +12,10 @@ use InvalidArgumentException;
  */
 final readonly class OutboxMessage
 {
+    /** Bounds of `priority`: a signed 16-bit range, which every SQL backend stores as `SMALLINT`. */
+    public const int MIN_PRIORITY = -32768;
+    public const int MAX_PRIORITY = 32767;
+
     public function __construct(
         private string $id,
         private string $type,
@@ -21,6 +25,7 @@ final readonly class OutboxMessage
         private int $attempts = 0,
         private ?DateTimeImmutable $lastAttemptAt = null,
         private ?string $aggregateId = null,
+        private int $priority = 0,
     ) {
         if ($id === '') {
             throw new InvalidArgumentException('Message id must not be empty');
@@ -32,6 +37,9 @@ final readonly class OutboxMessage
 
         if ($attempts < 0) {
             throw new InvalidArgumentException('Attempts must be non-negative');
+        }
+        if ($priority < self::MIN_PRIORITY || $priority > self::MAX_PRIORITY) {
+            throw new InvalidArgumentException(sprintf('Priority must be between %d and %d', self::MIN_PRIORITY, self::MAX_PRIORITY));
         }
     }
 
@@ -45,6 +53,7 @@ final readonly class OutboxMessage
         ?string $aggregateId = null,
         ?DateTimeImmutable $createdAt = null,
         ?string $id = null,
+        int $priority = 0,
     ): self {
         return new self(
             id: $id ?? (new RandomHexIdGenerator())->generate(),
@@ -53,6 +62,7 @@ final readonly class OutboxMessage
             status: OutboxStatus::Pending,
             createdAt: $createdAt ?? new DateTimeImmutable(),
             aggregateId: $aggregateId,
+            priority: $priority,
         );
     }
 
@@ -96,6 +106,14 @@ final readonly class OutboxMessage
         return $this->aggregateId;
     }
 
+    /**
+     * Higher is claimed first; equal priorities keep `createdAt` order.
+     */
+    public function getPriority(): int
+    {
+        return $this->priority;
+    }
+
     public function withStatus(OutboxStatus $status): self
     {
         return new self(
@@ -107,6 +125,7 @@ final readonly class OutboxMessage
             attempts: $this->attempts,
             lastAttemptAt: $this->lastAttemptAt,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 
@@ -121,6 +140,7 @@ final readonly class OutboxMessage
             attempts: $this->attempts + 1,
             lastAttemptAt: $at,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 
@@ -137,6 +157,7 @@ final readonly class OutboxMessage
             status: OutboxStatus::Pending,
             createdAt: $this->createdAt,
             aggregateId: $this->aggregateId,
+            priority: $this->priority,
         );
     }
 }

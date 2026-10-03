@@ -22,20 +22,23 @@ final class OutboxMessageDraftTest
             payload: '{"orderId": 42}',
             aggregateId: 'order-42',
             id: 'order-created-42',
+            priority: 10,
         );
 
         Assert::same($draft->type, 'order.created');
         Assert::same($draft->payload, '{"orderId": 42}');
         Assert::same($draft->aggregateId, 'order-42');
         Assert::same($draft->id, 'order-created-42');
+        Assert::same($draft->priority, 10);
     }
 
-    public function aggregateIdAndIdDefaultToNull(): void
+    public function aggregateIdAndIdDefaultToNullAndPriorityToZero(): void
     {
         $draft = new OutboxMessageDraft(type: 'order.created', payload: '{}');
 
         Assert::null($draft->aggregateId);
         Assert::null($draft->id);
+        Assert::same($draft->priority, 0);
     }
 
     public function throwsOnEmptyType(): void
@@ -50,6 +53,23 @@ final class OutboxMessageDraftTest
         Expect::exception(InvalidArgumentException::class)->withMessage('Message id must not be empty');
 
         new OutboxMessageDraft(type: 'order.created', payload: '{}', id: '');
+    }
+
+    public function throwsOnPriorityOutsideTheSmallintRange(): void
+    {
+        Assert::same((new OutboxMessageDraft(type: 'a', payload: '{}', priority: -32768))->priority, -32768);
+        Assert::same((new OutboxMessageDraft(type: 'a', payload: '{}', priority: 32767))->priority, 32767);
+
+        Expect::exception(InvalidArgumentException::class)->withMessage('Priority must be between -32768 and 32767');
+
+        new OutboxMessageDraft(type: 'a', payload: '{}', priority: 32768);
+    }
+
+    public function throwsOnPriorityBelowTheSmallintRange(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessage('Priority must be between -32768 and 32767');
+
+        new OutboxMessageDraft(type: 'a', payload: '{}', priority: -32769);
     }
 
     public function acceptsAnEmptyPayload(): void

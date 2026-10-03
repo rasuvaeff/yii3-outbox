@@ -25,6 +25,7 @@ final readonly class Serializer implements SerializerInterface
             'attempts' => $message->getAttempts(),
             'lastAttemptAt' => $message->getLastAttemptAt()?->format(DATE_ATOM),
             'aggregateId' => $message->getAggregateId(),
+            'priority' => $message->getPriority(),
         ];
 
         try {
@@ -98,6 +99,16 @@ final readonly class Serializer implements SerializerInterface
             $aggregateId = $decoded['aggregateId'];
         }
 
+        $priority = 0;
+
+        if (array_key_exists('priority', $decoded)) {
+            if (!is_int($decoded['priority'])) {
+                throw new InvalidArgumentException('Field "priority" must be an integer');
+            }
+
+            $priority = $decoded['priority'];
+        }
+
         $status = OutboxStatus::tryFrom($decoded['status']);
 
         if ($status === null) {
@@ -113,6 +124,7 @@ final readonly class Serializer implements SerializerInterface
             attempts: $decoded['attempts'],
             lastAttemptAt: $lastAttemptAt,
             aggregateId: $aggregateId,
+            priority: $priority,
         );
     }
 
