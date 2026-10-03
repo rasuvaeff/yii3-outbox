@@ -183,6 +183,38 @@ final class SerializerTest
         Assert::null($restored->getAggregateId());
     }
 
+    public function legacyMessageWithoutPriorityDeserializesWithZero(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';
+
+        Assert::same($this->fixture->deserialize($json)->getPriority(), 0);
+    }
+
+    public function priorityRoundTrips(): void
+    {
+        $message = OutboxMessage::create(type: 'audit.entry', payload: '{}', priority: 10);
+
+        Assert::same($this->fixture->deserialize($this->fixture->serialize($message))->getPriority(), 10);
+    }
+
+    public function throwsOnNonIntPriority(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0,"priority":"10"}';
+
+        Expect::exception(InvalidArgumentException::class)->withMessage('Field "priority" must be an integer');
+
+        $this->fixture->deserialize($json);
+    }
+
+    public function throwsOnPriorityOutOfRange(): void
+    {
+        $json = '{"id":"a","type":"t","payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0,"priority":40000}';
+
+        Expect::exception(InvalidArgumentException::class);
+
+        $this->fixture->deserialize($json);
+    }
+
     public function throwsOnNonStringType(): void
     {
         $json = '{"id":"a","type":123,"payload":"p","status":"pending","createdAt":"2026-01-01T00:00:00+00:00","attempts":0}';

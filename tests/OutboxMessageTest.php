@@ -186,6 +186,23 @@ final class OutboxMessageTest
         Assert::same($urgent->withAttempt($at)->withStatus(OutboxStatus::Failed)->withAttemptsReset()->getPriority(), 10);
     }
 
+    public function priorityOutsideTheSmallintRangeIsRejected(): void
+    {
+        Assert::same(OutboxMessage::create(type: 'a', payload: '{}', priority: OutboxMessage::MIN_PRIORITY)->getPriority(), -32768);
+        Assert::same(OutboxMessage::create(type: 'a', payload: '{}', priority: OutboxMessage::MAX_PRIORITY)->getPriority(), 32767);
+
+        Expect::exception(InvalidArgumentException::class)->withMessage('Priority must be between -32768 and 32767');
+
+        OutboxMessage::create(type: 'a', payload: '{}', priority: OutboxMessage::MAX_PRIORITY + 1);
+    }
+
+    public function priorityBelowTheRangeIsRejected(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessage('Priority must be between -32768 and 32767');
+
+        OutboxMessage::create(type: 'a', payload: '{}', priority: OutboxMessage::MIN_PRIORITY - 1);
+    }
+
     public function withAttemptsResetReturnsTheMessageAsNeverAttempted(): void
     {
         $createdAt = new DateTimeImmutable('2026-06-01 10:00:00');

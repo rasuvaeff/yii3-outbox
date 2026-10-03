@@ -55,6 +55,23 @@ final class OutboxMessageDraftTest
         new OutboxMessageDraft(type: 'order.created', payload: '{}', id: '');
     }
 
+    public function throwsOnPriorityOutsideTheSmallintRange(): void
+    {
+        Assert::same((new OutboxMessageDraft(type: 'a', payload: '{}', priority: -32768))->priority, -32768);
+        Assert::same((new OutboxMessageDraft(type: 'a', payload: '{}', priority: 32767))->priority, 32767);
+
+        Expect::exception(InvalidArgumentException::class)->withMessage('Priority must be between -32768 and 32767');
+
+        new OutboxMessageDraft(type: 'a', payload: '{}', priority: 32768);
+    }
+
+    public function throwsOnPriorityBelowTheSmallintRange(): void
+    {
+        Expect::exception(InvalidArgumentException::class)->withMessage('Priority must be between -32768 and 32767');
+
+        new OutboxMessageDraft(type: 'a', payload: '{}', priority: -32769);
+    }
+
     public function acceptsAnEmptyPayload(): void
     {
         Assert::same((new OutboxMessageDraft(type: 'ping', payload: ''))->payload, '');

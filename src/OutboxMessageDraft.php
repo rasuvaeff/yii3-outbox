@@ -19,7 +19,9 @@ final readonly class OutboxMessageDraft
      *                    one; null lets the {@see Outbox} generate one
      * @param int $priority higher is claimed first; equal priorities keep
      *                      `createdAt` order. The order is strict (no aging), so
-     *                      give a priority above 0 only to low-volume types
+     *                      give a priority above 0 only to low-volume types.
+     *                      Bounded by {@see OutboxMessage::MIN_PRIORITY} and
+     *                      {@see OutboxMessage::MAX_PRIORITY}
      */
     public function __construct(
         public string $type,
@@ -34,6 +36,9 @@ final readonly class OutboxMessageDraft
 
         if ($id === '') {
             throw new InvalidArgumentException('Message id must not be empty');
+        }
+        if ($priority < OutboxMessage::MIN_PRIORITY || $priority > OutboxMessage::MAX_PRIORITY) {
+            throw new InvalidArgumentException(sprintf('Priority must be between %d and %d', OutboxMessage::MIN_PRIORITY, OutboxMessage::MAX_PRIORITY));
         }
     }
 }

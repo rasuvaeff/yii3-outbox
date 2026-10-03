@@ -13,6 +13,10 @@
   keep the previous time order, so an outbox that never sets one behaves as
   before. `InMemoryStorage` orders its claims and listings this way;
   `rasuvaeff/yii3-outbox-db` 2.6 stores the column (#36).
+- `OutboxMessage::MIN_PRIORITY` / `MAX_PRIORITY` (-32768..32767): a priority
+  outside the range is rejected with `InvalidArgumentException` by the draft
+  and the message. `Serializer` writes `priority` and reads it as optional
+  (absent → 0, non-integer → `InvalidArgumentException`).
 
 ## 1.7.0 — 2026-09-18
 

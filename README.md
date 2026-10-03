@@ -176,6 +176,10 @@ high-priority message in its backoff window is not claimed.
 The order is strict — there is no aging. A type that produces messages faster
 than the consumer drains them would starve everything below it, so give a
 priority above 0 only to low-volume types that never fill a claim on their own.
+The range is `OutboxMessage::MIN_PRIORITY`..`MAX_PRIORITY` (-32768..32767, a
+`SMALLINT` in every SQL backend); outside it the draft or message throws
+`InvalidArgumentException`. `Serializer` carries the field; JSON without it
+deserializes with priority 0.
 `InMemoryStorage` orders this way; `rasuvaeff/yii3-outbox-db` 2.6+ stores the
 column and orders the claim.
 

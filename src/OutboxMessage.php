@@ -12,6 +12,10 @@ use InvalidArgumentException;
  */
 final readonly class OutboxMessage
 {
+    /** Bounds of `priority`: a signed 16-bit range, which every SQL backend stores as `SMALLINT`. */
+    public const int MIN_PRIORITY = -32768;
+    public const int MAX_PRIORITY = 32767;
+
     public function __construct(
         private string $id,
         private string $type,
@@ -33,6 +37,9 @@ final readonly class OutboxMessage
 
         if ($attempts < 0) {
             throw new InvalidArgumentException('Attempts must be non-negative');
+        }
+        if ($priority < self::MIN_PRIORITY || $priority > self::MAX_PRIORITY) {
+            throw new InvalidArgumentException(sprintf('Priority must be between %d and %d', self::MIN_PRIORITY, self::MAX_PRIORITY));
         }
     }
 
