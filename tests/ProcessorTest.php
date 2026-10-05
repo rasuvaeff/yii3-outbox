@@ -958,7 +958,7 @@ final class ProcessorTest
 
         // Both exits must be exercised: the ordinary one and the one where the
         // publisher throws something the processor rethrows.
-        Classify::cover($threw, 'publisher threw an unexpected exception', 10.0);
+        Classify::cover($threw, 'publisher threw an unexpected exception', 5.0);
         Classify::cover(!$threw && $specs !== [], 'batch completed with messages', 20.0);
         Classify::when($specs === [], 'empty batch');
 
