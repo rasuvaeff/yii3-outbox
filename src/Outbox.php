@@ -111,8 +111,10 @@ final readonly class Outbox
      *
      * @throws LogicException when the storage is not a {@see RequeueableStorageInterface}
      */
-    public function requeueFailed(array $types = [], int $limit = 1000): int
-    {
+    public function requeueFailed(
+        array $types = [],
+        int $limit = 1000,
+    ): int {
         if (!$this->storage instanceof RequeueableStorageInterface) {
             throw new LogicException(sprintf(
                 'Storage %s cannot requeue: it does not implement %s',

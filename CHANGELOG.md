@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Mutation testing now counts uncovered code (`--with-uncovered`, template mutator settings): overall MSI 99% against `minMsi` 99. No new tests were needed. The `findPending()`, `findFailed()`, `claim()` and `requeueFailed()` signatures of `InMemoryStorage` and `Outbox` are reformatted to one parameter per line, no behaviour change.
+
 ## 1.8.0 — 2026-10-03
 
 ### Added
