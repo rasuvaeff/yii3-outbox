@@ -35,14 +35,18 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
     }
 
     #[\Override]
-    public function findPending(array $types = [], int $limit = 1000): array
-    {
+    public function findPending(
+        array $types = [],
+        int $limit = 1000,
+    ): array {
         return $this->findByStatus(OutboxStatus::Pending, $types, $limit);
     }
 
     #[\Override]
-    public function findFailed(array $types = [], int $limit = 1000): array
-    {
+    public function findFailed(
+        array $types = [],
+        int $limit = 1000,
+    ): array {
         return $this->findByStatus(OutboxStatus::Failed, $types, $limit);
     }
 
@@ -120,8 +124,10 @@ final class InMemoryStorage implements RetryAwareStorageInterface, BatchAcknowle
     }
 
     #[\Override]
-    public function claim(array $types = [], int $limit = 1000): array
-    {
+    public function claim(
+        array $types = [],
+        int $limit = 1000,
+    ): array {
         return $this->claimMatching($types, $limit, static fn(OutboxMessage $message): bool => true);
     }
 
