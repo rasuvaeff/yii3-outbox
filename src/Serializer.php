@@ -55,27 +55,27 @@ final readonly class Serializer implements SerializerInterface
             }
         }
 
-        if (!is_string($decoded['id'])) {
+        if (!isset($decoded['id']) || !is_string($decoded['id'])) {
             throw new InvalidArgumentException('Field "id" must be a string');
         }
 
-        if (!is_string($decoded['type'])) {
+        if (!isset($decoded['type']) || !is_string($decoded['type'])) {
             throw new InvalidArgumentException('Field "type" must be a string');
         }
 
-        if (!is_string($decoded['payload'])) {
+        if (!isset($decoded['payload']) || !is_string($decoded['payload'])) {
             throw new InvalidArgumentException('Field "payload" must be a string');
         }
 
-        if (!is_string($decoded['status'])) {
+        if (!isset($decoded['status']) || !is_string($decoded['status'])) {
             throw new InvalidArgumentException('Field "status" must be a string');
         }
 
-        if (!is_string($decoded['createdAt'])) {
+        if (!isset($decoded['createdAt']) || !is_string($decoded['createdAt'])) {
             throw new InvalidArgumentException('Field "createdAt" must be a string');
         }
 
-        if (!is_int($decoded['attempts'])) {
+        if (!isset($decoded['attempts']) || !is_int($decoded['attempts'])) {
             throw new InvalidArgumentException('Field "attempts" must be an integer');
         }
 
