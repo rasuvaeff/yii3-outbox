@@ -17,7 +17,7 @@ for reliably publishing messages with configurable retry policies.
 
 ## Requirements
 
-- PHP 8.3+
+- PHP 8.3 – 8.6
 - `psr/clock` ^1.0
 - `psr/log` ^3.0
 
