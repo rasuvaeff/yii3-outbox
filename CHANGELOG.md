@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.2 — 2026-11-27
+
+- Docs: the agent skill says a terminal `PublishException` is marked failed immediately, not only after the attempts run out.
+
 ## 1.8.1 — 2026-11-22
 
 - Mutation testing now counts uncovered code (`--with-uncovered`, template mutator settings): overall MSI 99% against `minMsi` 99. No new tests were needed. The `findPending()`, `findFailed()`, `claim()` and `requeueFailed()` signatures of `InMemoryStorage` and `Outbox` are reformatted to one parameter per line, no behaviour change.

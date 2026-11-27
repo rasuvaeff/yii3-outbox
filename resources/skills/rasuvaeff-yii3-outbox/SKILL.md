@@ -36,8 +36,8 @@ Namespace `Rasuvaeff\Yii3Outbox\`.
 4. **Failed publish stays `Pending` while retries remain.** `Processor`
    increments attempts (`withAttempt($now)`) before publishing; on
    `PublishException` it saves the message back as `Pending` if
-   `RetryPolicy::shouldRetry()` allows, and calls `markFailed()` only when
-   attempts are exhausted. Storage's pending lookup must return messages with
+   `RetryPolicy::shouldRetry()` allows, and calls `markFailed()` when attempts
+   are exhausted or the exception `isTerminal()` (no retry can fix it). Storage's pending lookup must return messages with
    any attempt count — `RetryPolicy` decides readiness, not storage.
 
 5. **Pass the domain event's id when the message mirrors one.**
